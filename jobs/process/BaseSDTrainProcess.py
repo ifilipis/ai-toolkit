@@ -1975,10 +1975,13 @@ class BaseSDTrainProcess(BaseTrainProcess):
             # Update the learning rates if they changed
             # optimizer.param_groups = previous_params
 
-        lr_scheduler_params = self.train_config.lr_scheduler_params
+        lr_scheduler_params = dict(self.train_config.lr_scheduler_params or {})
 
-        # make sure it had bare minimum
-        if 'max_iterations' not in lr_scheduler_params:
+        # make sure it has bare minimum when not explicitly provided
+        if (
+            'total_iters' not in lr_scheduler_params
+            and 'max_iterations' not in lr_scheduler_params
+        ):
             lr_scheduler_params['total_iters'] = self.train_config.steps
 
         lr_scheduler = get_lr_scheduler(
