@@ -34,7 +34,7 @@ from diffusers import EMAModel
 import math
 from toolkit.train_tools import precondition_model_outputs_flow_match
 from toolkit.models.diffusion_feature_extraction import DiffusionFeatureExtractor, load_dfe
-from toolkit.util.losses import wavelet_loss, stepped_loss, laplacian_pyramid_loss
+from toolkit.util.losses import wavelet_loss, stepped_loss, laplacian_loss
 import torch.nn.functional as F
 from toolkit.unloader import unload_text_encoder
 from PIL import Image
