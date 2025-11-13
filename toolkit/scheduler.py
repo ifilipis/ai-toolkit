@@ -1,6 +1,7 @@
 import torch
 from typing import Optional
 from diffusers.optimization import SchedulerType, TYPE_TO_SCHEDULER_FUNCTION, get_constant_schedule_with_warmup
+from timm.scheduler import CosineLRScheduler
 
 
 def get_lr_scheduler(
@@ -16,8 +17,15 @@ def get_lr_scheduler(
         )
     elif name == "cosine_with_restarts":
         if 'total_iters' in kwargs:
-            kwargs['T_0'] = kwargs.pop('total_iters')
-        return torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+            kwargs['t_initial'] = kwargs.pop('total_iters')
+        if 'T_0' in kwargs:
+            kwargs['t_initial'] = kwargs.pop('T_0')
+        if 'T_mult' in kwargs:
+            kwargs['cycle_mul'] = kwargs.pop('T_mult')
+        if 'eta_min' in kwargs and 'lr_min' not in kwargs:
+            kwargs['lr_min'] = kwargs.pop('eta_min')
+        kwargs.setdefault('cycle_limit', 0)
+        return CosineLRScheduler(
             optimizer, **kwargs
         )
     elif name == "step":
