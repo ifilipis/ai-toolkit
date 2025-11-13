@@ -766,7 +766,7 @@ class SDTrainer(BaseSDTrainProcess):
                 # the way this loss works, it is low, increase it to match predictable LR effects
                 loss = loss * 10.0
             elif self.train_config.loss_type == "laplacian":
-                loss = laplacian_pyramid_loss(pred, target)
+                loss = laplacian_loss(pred, target)
             else:
                 loss = torch.nn.functional.mse_loss(pred.float(), target.float(), reduction="none")
                 
