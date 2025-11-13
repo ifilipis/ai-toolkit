@@ -20,6 +20,7 @@ class _TimmCosineWithRestartsScheduler(CosineLRScheduler):
         if 't_initial' not in kwargs:
             raise ValueError("t_initial (or total_iters/max_iterations/T_0) must be provided for cosine_with_restarts scheduler")
 
+        kwargs.setdefault('t_in_epochs', False)
         super().__init__(optimizer, **kwargs)
         self._num_updates = -1
 
@@ -36,6 +37,9 @@ class _TimmCosineWithRestartsScheduler(CosineLRScheduler):
         else:
             self._num_updates = num_updates
         return super().step_update(self._num_updates, metric=metric)
+
+    def get_last_lr(self):
+        return [group['lr'] for group in self.optimizer.param_groups]
 
 
 def get_lr_scheduler(
