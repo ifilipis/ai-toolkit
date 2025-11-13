@@ -356,6 +356,7 @@ export const modelArchs: ModelArch[] = [
       'config.process[0].train.noise_scheduler': ['flowmatch', 'flowmatch'],
       'config.process[0].train.timestep_type': ['weighted', 'sigmoid'],
       'config.process[0].model.qtype': ['qfloat8', 'qfloat8'],
+      'config.process[0].train.loss_type': ['laplacian', 'mse'],
       'config.process[0].model.model_kwargs': [
         {
           match_target_res: false,

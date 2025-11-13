@@ -2,6 +2,98 @@ import torch
 
 
 _dwt = None
+_gaussian_kernel_cache = {}
+
+
+def _get_gaussian_kernel(device, dtype, channels):
+    key = (device, dtype, channels)
+    kernel = _gaussian_kernel_cache.get(key)
+    if kernel is None:
+        base = torch.tensor(
+            [
+                [1.0, 4.0, 6.0, 4.0, 1.0],
+                [4.0, 16.0, 24.0, 16.0, 4.0],
+                [6.0, 24.0, 36.0, 24.0, 6.0],
+                [4.0, 16.0, 24.0, 16.0, 4.0],
+                [1.0, 4.0, 6.0, 4.0, 1.0],
+            ],
+            device=device,
+            dtype=dtype,
+        )
+        base = base / 256.0
+        kernel = base.view(1, 1, 5, 5).repeat(channels, 1, 1, 1)
+        _gaussian_kernel_cache[key] = kernel
+    return kernel
+
+
+def _conv_gauss(img, kernel):
+    kw = kernel.shape[-1]
+    pad = kw // 2
+    img = torch.nn.functional.pad(img, (pad, pad, pad, pad), mode="replicate")
+    return torch.nn.functional.conv2d(img, kernel, groups=img.shape[1])
+
+
+def _pyr_downsample(x):
+    return x[:, :, ::2, ::2]
+
+
+def _pyr_upsample(x, kernel, filtered_height, filtered_width):
+    n_channels = kernel.shape[0]
+    op0 = 1 - (filtered_height % 2)
+    op1 = 1 - (filtered_width % 2)
+    return torch.nn.functional.conv_transpose2d(
+        x,
+        kernel,
+        groups=n_channels,
+        stride=2,
+        padding=2,
+        output_padding=(op0, op1),
+    )
+
+
+def _laplacian_pyramid_expand(img, kernel, max_levels):
+    current = img
+    pyr = []
+    for _ in range(max_levels):
+        filtered = _conv_gauss(current, kernel)
+        down = _pyr_downsample(filtered)
+        up = _pyr_upsample(down, 4 * kernel, filtered.shape[-2], filtered.shape[-1])
+        diff = current - up
+        pyr.append(diff)
+
+        current = down
+
+    return pyr
+
+
+def laplacian_loss(pred, target, max_levels=5):
+    pred = pred.float()
+    target = target.float()
+
+    channels = pred.shape[1]
+    kernel = _get_gaussian_kernel(pred.device, pred.dtype, channels)
+
+    pyr_pred = _laplacian_pyramid_expand(pred, kernel, max_levels)
+    pyr_target = _laplacian_pyramid_expand(target, kernel, max_levels)
+
+    base_size = pred.shape[-2:]
+    weights = [2 ** i for i in range(len(pyr_pred))]
+    weight_total = float(sum(weights)) if weights else 1.0
+
+    loss = 0.0
+    for weight, pred_level, target_level in zip(weights, pyr_pred, pyr_target):
+        if pred_level.shape[-2:] != base_size:
+            pred_level = torch.nn.functional.interpolate(
+                pred_level, size=base_size, mode="bilinear", align_corners=False
+            )
+            target_level = torch.nn.functional.interpolate(
+                target_level, size=base_size, mode="bilinear", align_corners=False
+            )
+        loss = loss + weight * torch.nn.functional.l1_loss(
+            pred_level, target_level, reduction="none"
+        )
+
+    return loss / weight_total
 
 
 def _get_wavelet_loss(device, dtype):

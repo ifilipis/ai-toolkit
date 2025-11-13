@@ -49,6 +49,7 @@ config:
         train_text_encoder: false  # probably won't work with qwen image
         gradient_checkpointing: true  # need the on unless you have a ton of vram
         noise_scheduler: "flowmatch" # for training only
+        loss_type: "laplacian"
         optimizer: "adamw8bit"
         lr: 1e-4
         # uncomment this to skip the pre training sample

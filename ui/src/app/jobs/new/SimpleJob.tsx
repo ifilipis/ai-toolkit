@@ -534,6 +534,7 @@ export default function SimpleJob({
                     { value: 'mse', label: 'Mean Squared Error' },
                     { value: 'mae', label: 'Mean Absolute Error' },
                     { value: 'wavelet', label: 'Wavelet' },
+                    { value: 'laplacian', label: 'Laplacian' },
                     { value: 'stepped', label: 'Stepped Recovery' },
                   ]}
                 />
