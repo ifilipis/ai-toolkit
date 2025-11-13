@@ -50,8 +50,8 @@ def wavelet_loss(model_pred, latents, noise):
 _gaussian_kernel_cache = {}
 
 
-def _get_gaussian_kernel5(channels, device, dtype):
-    key = (channels, device, dtype)
+def _get_gaussian_kernel(device, dtype, channels):
+    key = (device, dtype, channels)
     kernel = _gaussian_kernel_cache.get(key)
     if kernel is None:
         base = torch.tensor(
@@ -63,80 +63,82 @@ def _get_gaussian_kernel5(channels, device, dtype):
                 [1.0, 4.0, 6.0, 4.0, 1.0],
             ],
             device=device,
-            dtype=torch.float32,
+            dtype=dtype,
         )
         base = base / 256.0
-        base = base.to(dtype=dtype)
         kernel = base.view(1, 1, 5, 5).repeat(channels, 1, 1, 1)
         _gaussian_kernel_cache[key] = kernel
     return kernel
 
 
-def _conv_gaussian(img, kernel):
-    n_channels = img.shape[1]
-    padding = kernel.shape[-1] // 2
-    img = F.pad(img, (padding, padding, padding, padding), mode="replicate")
-    return F.conv2d(img, kernel, groups=n_channels)
+def _conv_gauss(img, kernel):
+    kw = kernel.shape[-1]
+    pad = kw // 2
+    img = torch.nn.functional.pad(img, (pad, pad, pad, pad), mode="replicate")
+    return torch.nn.functional.conv2d(img, kernel, groups=img.shape[1])
 
 
 def _pyr_downsample(x):
     return x[:, :, ::2, ::2]
 
 
-def _pyr_upsample(x, kernel, target_size):
-    n_channels = x.shape[1]
-    op_h = target_size[0] % 2
-    op_w = target_size[1] % 2
-    return F.conv_transpose2d(
+def _pyr_upsample(x, kernel, filtered_height, filtered_width):
+    n_channels = kernel.shape[0]
+    op0 = 1 - (filtered_height % 2)
+    op1 = 1 - (filtered_width % 2)
+    return torch.nn.functional.conv_transpose2d(
         x,
         kernel,
         groups=n_channels,
         stride=2,
         padding=2,
-        output_padding=(1 - op_h, 1 - op_w),
+        output_padding=(op0, op1),
     )
 
 
-def _laplacian_pyramid_expand(img, kernel, max_levels=5):
+def _laplacian_pyramid_expand(img, kernel, max_levels):
     current = img
     pyr = []
-    expanded_kernel = 4 * kernel
-    for level in range(max_levels):
-        filtered = _conv_gaussian(current, kernel)
+    for _ in range(max_levels):
+        filtered = _conv_gauss(current, kernel)
         down = _pyr_downsample(filtered)
-        up = _pyr_upsample(down, expanded_kernel, filtered.shape[-2:])
+        up = _pyr_upsample(down, 4 * kernel, filtered.shape[-2], filtered.shape[-1])
         diff = current - up
         pyr.append(diff)
-        if down.shape[-2] < 2 or down.shape[-1] < 2:
-            break
+
         current = down
+
     return pyr
 
 
-def laplacian_pyramid_loss(pred, target, max_levels=5):
+def laplacian_loss(pred, target, max_levels=5):
     pred = pred.float()
     target = target.float()
 
-    if pred.shape != target.shape:
-        raise ValueError("pred and target must have the same shape for laplacian loss")
+    channels = pred.shape[1]
+    kernel = _get_gaussian_kernel(pred.device, pred.dtype, channels)
 
-    kernel = _get_gaussian_kernel5(pred.shape[1], pred.device, pred.dtype)
-    pyr_pred = _laplacian_pyramid_expand(pred, kernel, max_levels=max_levels)
-    pyr_target = _laplacian_pyramid_expand(target, kernel, max_levels=max_levels)
+    pyr_pred = _laplacian_pyramid_expand(pred, kernel, max_levels)
+    pyr_target = _laplacian_pyramid_expand(target, kernel, max_levels)
 
-    levels = min(len(pyr_pred), len(pyr_target))
-    weights = [2 ** i for i in range(levels)]
+    base_size = pred.shape[-2:]
+    weights = [2 ** i for i in range(len(pyr_pred))]
+    weight_total = float(sum(weights)) if weights else 1.0
 
-    losses = []
-    reduce_dims = tuple(range(1, pred.ndim))
-    for weight, pred_level, target_level in zip(weights, pyr_pred[:levels], pyr_target[:levels]):
-        level_loss = torch.abs(pred_level - target_level)
-        losses.append(weight * level_loss.mean(dim=reduce_dims, keepdim=True))
+    loss = 0.0
+    for weight, pred_level, target_level in zip(weights, pyr_pred, pyr_target):
+        if pred_level.shape[-2:] != base_size:
+            pred_level = torch.nn.functional.interpolate(
+                pred_level, size=base_size, mode="bilinear", align_corners=False
+            )
+            target_level = torch.nn.functional.interpolate(
+                target_level, size=base_size, mode="bilinear", align_corners=False
+            )
+        loss = loss + weight * torch.nn.functional.l1_loss(
+            pred_level, target_level, reduction="none"
+        )
 
-    if not losses:
-        return torch.zeros((pred.shape[0], 1, 1, 1), device=pred.device, dtype=pred.dtype)
-
-    return torch.stack(losses, dim=0).sum(dim=0)
+    return loss / weight_total
 
 
 def stepped_loss(model_pred, latents, noise, noisy_latents, timesteps, scheduler):
