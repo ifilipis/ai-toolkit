@@ -1,6 +1,9 @@
 import torch
 import torch.nn.functional as F
 
+import torchvision.utils
+import os
+import time
 
 _dwt = None
 
@@ -110,8 +113,7 @@ def _laplacian_pyramid_expand(img, kernel, max_levels):
 
     return pyr
 
-
-def laplacian_loss(pred, target, max_levels=5):
+def laplacian_loss(pred, target, *, pred_latents=None, target_latents=None, max_levels=5):
     pred = pred.float()
     target = target.float()
 
@@ -125,7 +127,7 @@ def laplacian_loss(pred, target, max_levels=5):
     weights = [2 ** i for i in range(len(pyr_pred))]
     weight_total = float(sum(weights)) if weights else 1.0
 
-    loss = 0.0
+    loss_map = 0.0
     for weight, pred_level, target_level in zip(weights, pyr_pred, pyr_target):
         if pred_level.shape[-2:] != base_size:
             pred_level = torch.nn.functional.interpolate(
@@ -134,11 +136,14 @@ def laplacian_loss(pred, target, max_levels=5):
             target_level = torch.nn.functional.interpolate(
                 target_level, size=base_size, mode="bilinear", align_corners=False
             )
-        loss = loss + weight * torch.nn.functional.l1_loss(
+        level_loss = weight * torch.nn.functional.l1_loss(
             pred_level, target_level, reduction="none"
         )
+        loss_map = loss_map + level_loss
 
-    return loss / weight_total
+    loss_map = loss_map / weight_total * 10
+
+    return loss_map
 
 
 def stepped_loss(model_pred, latents, noise, noisy_latents, timesteps, scheduler):
