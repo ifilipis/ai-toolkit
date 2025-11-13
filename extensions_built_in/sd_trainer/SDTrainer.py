@@ -40,6 +40,9 @@ from toolkit.unloader import unload_text_encoder
 from PIL import Image
 from torchvision.transforms import functional as TF
 
+import time
+import torchvision.utils
+
 
 def flush():
     torch.cuda.empty_cache()
@@ -766,7 +769,98 @@ class SDTrainer(BaseSDTrainProcess):
                 # the way this loss works, it is low, increase it to match predictable LR effects
                 loss = loss * 10.0
             elif self.train_config.loss_type == "laplacian":
-                loss = laplacian_loss(pred, target)
+                prediction_type = getattr(self.sd.noise_scheduler.config, "prediction_type", "epsilon")
+
+                if getattr(batch, "sigmas", None) is not None:
+                    sigmas = batch.sigmas.to(noisy_latents.device, dtype=noisy_latents.dtype)
+                else:
+                    sigmas = self.get_sigmas(
+                        timesteps,
+                        len(noisy_latents.shape),
+                        noisy_latents.dtype,
+                    )
+
+                sigmas = sigmas.to(pred.device, dtype=pred.dtype)
+                base_noisy_latents = noisy_latents.detach().to(pred.device, dtype=pred.dtype)
+
+                def _predict_denoised_latents(model_output: torch.Tensor) -> torch.Tensor:
+                    if prediction_type in {"original_sample", "sample"}:
+                        return model_output
+                    if prediction_type == "epsilon":
+                        return base_noisy_latents - sigmas * model_output
+                    if prediction_type == "v_prediction":
+                        denom = sigmas ** 2 + 1
+                        return model_output * (-sigmas / denom.sqrt()) + (base_noisy_latents / denom)
+                    raise ValueError(
+                        f"Unsupported prediction_type '{prediction_type}' for Laplacian loss"
+                    )
+                    
+                def _decode_for_laplacian(latents_tensor: torch.Tensor) -> torch.Tensor:
+                    vae = self.sd.vae
+                    vae_config = getattr(vae, "config", {})
+
+                    def _config_get(config, key, default=None):
+                        if isinstance(config, dict):
+                            return config.get(key, default)
+                        return getattr(config, key, default)
+
+                    # Ensure the VAE runs on its parameter device/dtype to keep gradients intact.
+                    try:
+                        first_param = next(vae.parameters())
+                        vae_device = first_param.device
+                        vae_dtype = first_param.dtype
+                    except StopIteration:
+                        vae_device = latents_tensor.device
+                        vae_dtype = latents_tensor.dtype
+
+                    target_device = latents_tensor.device
+                    target_dtype = latents_tensor.dtype
+
+                    latents = latents_tensor.to(vae_device, dtype=vae_dtype)
+
+                    scaling_factor = _config_get(vae_config, "scaling_factor")
+                    if scaling_factor is not None:
+                        shift_factor = _config_get(vae_config, "shift_factor", 0.0)
+                        scaling = torch.as_tensor(scaling_factor, device=latents.device, dtype=latents.dtype)
+                        shift = torch.as_tensor(shift_factor, device=latents.device, dtype=latents.dtype)
+                        latents = latents / scaling + shift
+                        decoded = vae.decode(latents).sample
+                    else:
+                        z_dim = _config_get(vae_config, "z_dim")
+                        latents_mean_cfg = _config_get(vae_config, "latents_mean")
+                        latents_std_cfg = _config_get(vae_config, "latents_std")
+                        if z_dim is None or latents_mean_cfg is None or latents_std_cfg is None:
+                            raise ValueError("VAE config missing Qwen latent parameters for Laplacian loss decode")
+                        latents_mean = torch.tensor(
+                            latents_mean_cfg,
+                            device=latents.device,
+                            dtype=latents.dtype,
+                        ).view(1, z_dim, 1, 1, 1)
+                        latents_std = torch.tensor(
+                            latents_std_cfg,
+                            device=latents.device,
+                            dtype=latents.dtype,
+                        ).view(1, z_dim, 1, 1, 1)
+                        latents = latents.unsqueeze(2)
+                        latents = latents * latents_std + latents_mean
+                        decoded = vae.decode(latents, return_dict=False)[0][:, :, 0]
+
+                    return decoded.to(target_device, dtype=target_dtype)
+                    
+                pred_latents_for_loss = _predict_denoised_latents(pred)
+                pred_images = _decode_for_laplacian(pred_latents_for_loss)
+
+                with torch.no_grad():
+                    target_model_output = target.to(pred.device, dtype=pred.dtype)
+                    target_latents_for_loss = _predict_denoised_latents(target_model_output)
+                    target_images = _decode_for_laplacian(target_latents_for_loss)
+
+                loss = laplacian_loss(
+                    pred_images,
+                    target_images,
+                    pred_latents=pred_latents_for_loss,
+                    target_latents=target_latents_for_loss,
+                )
             else:
                 loss = torch.nn.functional.mse_loss(pred.float(), target.float(), reduction="none")
                 
@@ -873,8 +967,7 @@ class SDTrainer(BaseSDTrainProcess):
             pred_std = noise_pred.std([2, 3], keepdim=True)
             norm_std_loss = torch.abs(self.train_config.target_norm_std_value - pred_std).mean()
             loss = loss + norm_std_loss
-
-
+                
         return loss + additional_loss
 
     def preprocess_batch(self, batch: 'DataLoaderBatchDTO'):
