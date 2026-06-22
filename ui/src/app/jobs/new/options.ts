@@ -1187,18 +1187,23 @@ export const jobTypeOptions: JobTypeOption[] = [
   {
     value: 'diffusion_kto_trainer',
     label: 'Diffusion-KTO',
-    disableSections: ['slider', 'datasets'],
+    disableSections: ['slider'],
     onActivate: (config: JobConfig) => {
       config.config.process[0].kto = { ...defaultDiffusionKTOConfig };
       if (!config.config.process[0].datasets || config.config.process[0].datasets.length === 0) {
         config.config.process[0].datasets = [{ ...defaultDatasetConfig }];
       }
-      config.config.process[0].train.disable_sampling = true;
       config.config.process[0].train.optimizer = 'adamw';
       config.config.process[0].train.batch_size = 1;
       config.config.process[0].train.gradient_accumulation = 1;
-      config.config.process[0].sample.sample_every = 0;
-      config.config.process[0].sample.samples = [];
+      config.config.process[0].train.noise_scheduler = 'flowmatch';
+      config.config.process[0].sample.sampler = 'flowmatch';
+      if (!config.config.process[0].sample.sample_every) {
+        config.config.process[0].sample.sample_every = 250;
+      }
+      if (config.config.process[0].sample.samples.length === 0) {
+        config.config.process[0].sample.samples = [{ prompt: '' }];
+      }
       return config;
     },
     onDeactivate: (config: JobConfig) => {

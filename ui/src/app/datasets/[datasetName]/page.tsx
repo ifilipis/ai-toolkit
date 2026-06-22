@@ -25,6 +25,16 @@ export default function DatasetPage({ params }: { params: { datasetName: string 
   const { settings, isSettingsLoaded } = useSettings();
   const [selectedImgPath, setSelectedImgPath] = useState<string | null>(null);
   const [captionExt, setCaptionExt] = useState<string>('txt');
+
+  useEffect(() => {
+    if (typeof window !== 'undefined' && datasetName) {
+      const saved = localStorage.getItem(`caption_ext_${datasetName}`);
+      if (saved) {
+        setCaptionExt(saved);
+      }
+    }
+  }, [datasetName]);
+
   const [captionRefreshKeys, setCaptionRefreshKeys] = useState<Record<string, number>>({});
   const [scrollParent, setScrollParent] = useState<HTMLDivElement | null>(null);
   const [captionBarHeight, setCaptionBarHeight] = useState(0);
@@ -127,7 +137,12 @@ export default function DatasetPage({ params }: { params: { datasetName: string 
             <CreatableSelectInput
               className="w-44"
               value={captionExt}
-              onChange={value => setCaptionExt(value)}
+              onChange={value => {
+                setCaptionExt(value);
+                if (typeof window !== 'undefined') {
+                  localStorage.setItem(`caption_ext_${datasetName}`, value);
+                }
+              }}
               options={[
                 { value: 'txt', label: 'txt' },
                 { value: 'json', label: 'json' },

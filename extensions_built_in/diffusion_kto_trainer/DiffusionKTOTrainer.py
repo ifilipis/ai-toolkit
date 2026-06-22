@@ -32,6 +32,7 @@ class DiffusionKTOConfig:
     beta: float = 1000.0
     lambda_d: float = 1.0
     lambda_u: float = 1.0
+    positive_ratio: float = 0.5
     halo: str = "sigmoid"
     bce_offset: str = "none"
     group_size: int = 4
@@ -41,6 +42,7 @@ class DiffusionKTOConfig:
         self.beta = float(kwargs.get("beta", kwargs.get("beta_dpo", self.beta)))
         self.lambda_d = float(kwargs.get("lambda_d", kwargs.get("lambda_d_kto", self.lambda_d)))
         self.lambda_u = float(kwargs.get("lambda_u", kwargs.get("lambda_u_kto", self.lambda_u)))
+        self.positive_ratio = min(1.0, max(0.0, float(kwargs.get("positive_ratio", self.positive_ratio))))
         self.halo = str(kwargs.get("halo", self.halo)).lower()
         if self.halo != "sigmoid":
             raise ValueError("Diffusion-KTO currently supports halo='sigmoid'.")
@@ -54,15 +56,17 @@ class DiffusionKTOConfig:
 class DiffusionKTOTrainer(DiffusionTrainer):
     def __init__(self, process_id: int, job, config: OrderedDict, **kwargs):
         config.setdefault("kto", {})
+        kto_config = DiffusionKTOConfig(**config.get("kto", {}))
         self._kto_dataset_configs = list(config.get("datasets") or [])
         config.pop("datasets", None)
         train_config = config.setdefault("train", {})
-        train_config["disable_sampling"] = True
         sample_config = config.setdefault("sample", {})
-        sample_config["sample_every"] = 0
-        sample_config["samples"] = []
+        if not kto_config.dataset_enabled:
+            train_config["disable_sampling"] = True
+            sample_config["sample_every"] = 0
+            sample_config["samples"] = []
         super().__init__(process_id, job, config, **kwargs)
-        self.kto_config = DiffusionKTOConfig(**self.config.get("kto", {}))
+        self.kto_config = kto_config
         if not self.is_ui_trainer and not self.kto_config.dataset_enabled:
             raise ValueError("diffusion_kto_trainer requires the UI SQLite runtime.")
 
@@ -71,9 +75,20 @@ class DiffusionKTOTrainer(DiffusionTrainer):
         self._candidate_root = self._kto_root / "candidates"
         self._candidate_root.mkdir(parents=True, exist_ok=True)
         self._offline_examples: list[dict] = []
-        self._offline_index = 0
+        self._offline_positive_examples: list[dict] = []
+        self._offline_negative_examples: list[dict] = []
+        self._offline_positive_index = 0
+        self._offline_negative_index = 0
         if self.kto_config.dataset_enabled:
             self._offline_examples = self._load_offline_examples()
+            self._offline_positive_examples = [
+                example for example in self._offline_examples if float(example.get("reward", 0.0)) > 0.0
+            ]
+            self._offline_negative_examples = [
+                example for example in self._offline_examples if float(example.get("reward", 0.0)) < 0.0
+            ]
+            if not self._offline_positive_examples or not self._offline_negative_examples:
+                raise ValueError("Diffusion-KTO dataset mode requires at least one image in both pos/ and neg/.")
         else:
             self._ensure_voting_schema()
 
@@ -284,11 +299,19 @@ class DiffusionKTOTrainer(DiffusionTrainer):
         batch_size = max(1, int(getattr(self.train_config, "batch_size", 1) or 1))
         examples: list[dict] = []
         for _ in range(batch_size):
-            if self._offline_index >= len(self._offline_examples):
-                random.shuffle(self._offline_examples)
-                self._offline_index = 0
-            examples.append(self._offline_examples[self._offline_index])
-            self._offline_index += 1
+            use_positive = random.random() < self.kto_config.positive_ratio
+            if use_positive:
+                if self._offline_positive_index >= len(self._offline_positive_examples):
+                    random.shuffle(self._offline_positive_examples)
+                    self._offline_positive_index = 0
+                examples.append(self._offline_positive_examples[self._offline_positive_index])
+                self._offline_positive_index += 1
+            else:
+                if self._offline_negative_index >= len(self._offline_negative_examples):
+                    random.shuffle(self._offline_negative_examples)
+                    self._offline_negative_index = 0
+                examples.append(self._offline_negative_examples[self._offline_negative_index])
+                self._offline_negative_index += 1
         return examples
 
     def _next_requested_task(self) -> Optional[sqlite3.Row]:
@@ -509,13 +532,14 @@ class DiffusionKTOTrainer(DiffusionTrainer):
 
     def _sample_timestep(self, latents: torch.Tensor) -> torch.Tensor:
         self._setup_train_timesteps(latents)
+        batch_size = latents.shape[0]
         max_index = max(1, len(self.sd.noise_scheduler.timesteps) - 1)
         min_step = max(0, int(self.train_config.min_denoising_steps))
         max_step = min(max_index, int(self.train_config.max_denoising_steps), max_index)
         if self.train_config.timestep_type == "one_step" or min_step >= max_step:
-            timestep_index = torch.tensor([min_step], device=self.device_torch, dtype=torch.long)
+            timestep_index = torch.full((batch_size,), min_step, device=self.device_torch, dtype=torch.long)
         else:
-            timestep_index = torch.randint(min_step, max_step, (1,), device=self.device_torch, dtype=torch.long)
+            timestep_index = torch.randint(min_step, max_step + 1, (batch_size,), device=self.device_torch, dtype=torch.long)
         return self.sd.noise_scheduler.timesteps[timestep_index.long()]
 
     def _encode_prompt_batch(
@@ -644,7 +668,6 @@ class DiffusionKTOTrainer(DiffusionTrainer):
         dtype = get_torch_dtype(self.train_config.dtype)
         self.network.train()
         self.network.is_active = True
-        self.optimizer.zero_grad(set_to_none=True)
 
         latents = torch.cat([self._load_image_latents(row["image_path"]) for row in train_rows], dim=0).to(
             self.device_torch,
@@ -654,8 +677,7 @@ class DiffusionKTOTrainer(DiffusionTrainer):
             latents.to(self.device_torch, dtype=dtype),
             noise_offset=self.train_config.noise_offset,
         ).to(self.device_torch, dtype=dtype)
-        t_one = self._sample_timestep(latents)
-        timesteps = t_one.repeat(latents.shape[0])
+        timesteps = self._sample_timestep(latents)
         target = self._kto_target(latents, noise, timesteps)
         conditional_embeds, unconditional_embeds = self._encode_prompt_batch(
             [row.get("prompt") or "" for row in train_rows],
@@ -736,20 +758,21 @@ class DiffusionKTOTrainer(DiffusionTrainer):
         diff_neg = g_term[~labels_binary].sum() / ((~labels_binary).sum() + 1e-6)
 
         self.accelerator.backward(loss)
-        if self.params and self.train_config.optimizer != "adafactor":
-            if isinstance(self.params[0], dict):
-                for param_group in self.params:
-                    self.accelerator.clip_grad_norm_(param_group["params"], self.train_config.max_grad_norm)
-            else:
-                self.accelerator.clip_grad_norm_(self.params, self.train_config.max_grad_norm)
-        self.optimizer.step()
-        if self.adapter is not None and hasattr(self.adapter, "post_weight_update"):
-            self.adapter.post_weight_update()
-        if self.ema is not None:
-            self.ema.update()
-        if self.lr_scheduler is not None:
-            self.lr_scheduler.step()
-        self.optimizer.zero_grad(set_to_none=True)
+        if not self.is_grad_accumulation_step:
+            if self.params and self.train_config.optimizer != "adafactor":
+                if isinstance(self.params[0], dict):
+                    for param_group in self.params:
+                        self.accelerator.clip_grad_norm_(param_group["params"], self.train_config.max_grad_norm)
+                else:
+                    self.accelerator.clip_grad_norm_(self.params, self.train_config.max_grad_norm)
+            self.optimizer.step()
+            if self.adapter is not None and hasattr(self.adapter, "post_weight_update"):
+                self.adapter.post_weight_update()
+            if self.ema is not None:
+                self.ema.update()
+            if self.lr_scheduler is not None:
+                self.lr_scheduler.step()
+            self.optimizer.zero_grad(set_to_none=True)
 
         return {
             "loss": float(loss.detach().cpu().item()),

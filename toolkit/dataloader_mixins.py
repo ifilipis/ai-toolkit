@@ -40,75 +40,50 @@ if TYPE_CHECKING:
     from toolkit.data_transfer_object.data_loader import FileItemDTO
 
 
-def _extract_comfyui_text_from_metadata(value):
-    if value is None:
-        return ""
-    if isinstance(value, str):
-        stripped = value.strip()
-        if not stripped:
-            return ""
-        try:
-            return _extract_comfyui_text_from_metadata(json.loads(stripped))
-        except Exception:
-            return stripped
-    if isinstance(value, dict):
-        inputs = value.get("inputs")
-        if isinstance(inputs, dict):
-            text = inputs.get("text")
-            if isinstance(text, str) and text.strip():
-                return text.strip()
-        for key in ("caption", "description", "text", "prompt", "positive"):
-            text = value.get(key)
-            if isinstance(text, str) and text.strip():
-                return text.strip()
-        for nested in value.values():
-            text = _extract_comfyui_text_from_metadata(nested)
-            if text:
-                return text
-    if isinstance(value, list):
-        for nested in value:
-            text = _extract_comfyui_text_from_metadata(nested)
-            if text:
-                return text
-    return ""
-
-
-def _extract_comfyui_prompt_text(value):
+def _extract_comfyui_prompt_from_workflow(value):
+    """Parse the ComfyUI *workflow* metadata format (nodes array with widget_values).
+    This format stores the text exactly as the user typed it, including any
+    surrounding JSON structure, so it is always preferred over the *prompt*
+    API format which may omit characters."""
     if isinstance(value, str):
         try:
             value = json.loads(value.strip())
         except Exception:
-            return value.strip()
+            return ""
     if not isinstance(value, dict):
+        return ""
+
+    nodes = value.get("nodes", [])
+    if not isinstance(nodes, list):
         return ""
 
     positive_candidates = []
     user_prompt_candidates = []
-    for node in value.values():
+    for node in nodes:
         if not isinstance(node, dict):
             continue
-        inputs = node.get("inputs")
-        if not isinstance(inputs, dict):
-            continue
-        class_type = str(node.get("class_type", "")).lower()
-        title = str((node.get("_meta") or {}).get("title", "")).lower()
+        node_type = str(node.get("type", "")).lower()
+        title = str(node.get("title", "")).lower()
         if "negative" in title:
             continue
-        if class_type == "cliptextencode" or "positive prompt" in title:
-            text = inputs.get("text")
-            if isinstance(text, str) and text.strip():
-                positive_candidates.append(text.strip())
+        if node_type == "cliptextencode" or "positive prompt" in title:
+            widgets = node.get("widgets_values", [])
+            if isinstance(widgets, list) and widgets:
+                text = widgets[0]
+                if isinstance(text, str) and text.strip():
+                    positive_candidates.append(text.strip())
         if "user prompt" in title:
-            text = inputs.get("value") or inputs.get("text")
-            if isinstance(text, str) and text.strip():
-                user_prompt_candidates.append(text.strip())
+            widgets = node.get("widgets_values", [])
+            if isinstance(widgets, list) and widgets:
+                text = widgets[0]
+                if isinstance(text, str) and text.strip():
+                    user_prompt_candidates.append(text.strip())
 
     if positive_candidates:
         return positive_candidates[0]
     if user_prompt_candidates:
         return user_prompt_candidates[0]
     return ""
-
 
 def get_comfyui_caption_from_png_metadata(image_path: str) -> str:
     try:
@@ -117,15 +92,12 @@ def get_comfyui_caption_from_png_metadata(image_path: str) -> str:
     except Exception:
         return ""
 
-    for key in ("prompt", "workflow"):
-        text = _extract_comfyui_prompt_text(metadata.get(key))
-        if text:
-            return clean_caption(text)
+    # The workflow metadata key stores text exactly as typed (full JSON preserved).
+    # The prompt metadata key serialises inputs.text without { and } — never use it.
+    text = _extract_comfyui_prompt_from_workflow(metadata.get("workflow"))
+    if text:
+        return text
 
-    for key in ("caption", "Caption", "description", "Description", "parameters", "Parameters"):
-        text = _extract_comfyui_text_from_metadata(metadata.get(key))
-        if text:
-            return clean_caption(text)
     return ""
 
 accelerator = get_accelerator()

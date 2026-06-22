@@ -176,7 +176,10 @@ export default function JobPage({ params }: { params: { jobID: string } }) {
           if (page.value === 'voting' && isOfflineDiffusionKTO) {
             return null;
           }
-          if (page.value === 'samples' && (processType === 'flow_grpo_trainer' || processType === 'diffusion_kto_trainer')) {
+          if (
+            page.value === 'samples' &&
+            (processType === 'flow_grpo_trainer' || (processType === 'diffusion_kto_trainer' && !isOfflineDiffusionKTO))
+          ) {
             return null;
           }
           return (

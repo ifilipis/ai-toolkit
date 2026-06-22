@@ -49,6 +49,7 @@ export const defaultDiffusionKTOConfig: DiffusionKTOConfig = {
   beta: 1000,
   lambda_d: 1,
   lambda_u: 1,
+  positive_ratio: 0.5,
   halo: 'sigmoid',
   bce_offset: 'none',
   group_size: 4,

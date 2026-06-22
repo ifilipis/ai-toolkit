@@ -55,11 +55,6 @@ const flowGRPOSamplerOptions: SelectOption[] = [
   { value: 'flowmatch_step_with_logprob', label: 'FlowMatch Step With LogProb' },
 ];
 
-const withCurrentOption = (options: SelectOption[], value?: string | null) => {
-  if (!value || options.some(option => option.value === value)) return options;
-  return [{ value, label: value }, ...options];
-};
-
 export default function SimpleJob({
   jobConfig,
   setJobConfig,
@@ -98,12 +93,8 @@ export default function SimpleJob({
   const isDiffusionKTODataset = isDiffusionKTO && !!jobConfig.config.process[0].kto?.dataset_enabled;
   const isLiveVotingTrainer = isFlowGRPO || (isDiffusionKTO && !isDiffusionKTODataset);
   const datasets = jobConfig.config.process[0].datasets || [];
-  const liveVotingSamplerOptions = isFlowGRPO
-    ? flowGRPOSamplerOptions
-    : withCurrentOption(aitkSamplerOptions, jobConfig.config.process[0].sample.sampler);
-  const liveVotingSchedulerOptions = isFlowGRPO
-    ? flowGRPOSamplerOptions
-    : withCurrentOption(aitkSamplerOptions, jobConfig.config.process[0].train.noise_scheduler);
+  const visibleDatasets = isDiffusionKTODataset ? datasets.slice(0, 1) : datasets;
+  const sampleSamplerOptions = isFlowGRPO ? flowGRPOSamplerOptions : aitkSamplerOptions;
 
   const taggedSampleArr: Record<string, any>[] | null = useMemo(() => {
     if (!modelArch) return null;
@@ -664,6 +655,14 @@ export default function SimpleJob({
                   min={0}
                   required
                 />
+                <NumberInput
+                  label="Positive Ratio"
+                  value={jobConfig.config.process[0].kto?.positive_ratio ?? 0.5}
+                  onChange={value => setJobConfig(value, 'config.process[0].kto.positive_ratio')}
+                  min={0}
+                  max={1}
+                  required
+                />
                 <SelectInput
                   label="BCE Offset"
                   value={jobConfig.config.process[0].kto?.bce_offset || 'none'}
@@ -689,23 +688,6 @@ export default function SimpleJob({
                       }}
                     />
                   </FormGroup>
-                  {jobConfig.config.process[0].kto?.dataset_enabled && (
-                    <SelectInput
-                      label="Target Dataset"
-                      className="pt-2"
-                      value={datasets[0]?.folder_path || ''}
-                      onChange={value => {
-                        if (datasets.length === 0) {
-                          const newDataset = objectCopy(defaultDatasetConfig);
-                          newDataset.folder_path = value;
-                          setJobConfig([newDataset], 'config.process[0].datasets');
-                        } else {
-                          setJobConfig(value, 'config.process[0].datasets[0].folder_path');
-                        }
-                      }}
-                      options={withCurrentOption(datasetOptions, datasets[0]?.folder_path)}
-                    />
-                  )}
                 </div>
               </div>
             </Card>
@@ -739,107 +721,6 @@ export default function SimpleJob({
             />
           </Card>
         </div>
-        {isLiveVotingTrainer && (
-          <div>
-            <Card title="Sampling">
-              <div className={sampleTopStyleClass}>
-                <div>
-                  <SelectInput
-                    label="Sampler"
-                    value={jobConfig.config.process[0].sample.sampler}
-                    onChange={value => setJobConfig(value, 'config.process[0].sample.sampler')}
-                    options={liveVotingSamplerOptions}
-                  />
-                  <SelectInput
-                    label="Scheduler"
-                    className="pt-2"
-                    value={jobConfig.config.process[0].train.noise_scheduler}
-                    onChange={value => setJobConfig(value, 'config.process[0].train.noise_scheduler')}
-                    options={liveVotingSchedulerOptions}
-                  />
-                </div>
-                <div>
-                  <NumberInput
-                    label="Guidance Scale"
-                    value={jobConfig.config.process[0].sample.guidance_scale}
-                    onChange={value => setJobConfig(value, 'config.process[0].sample.guidance_scale')}
-                    placeholder="eg. 1.0"
-                    min={0}
-                    required
-                  />
-                  <NumberInput
-                    label="Sample Steps"
-                    value={jobConfig.config.process[0].sample.sample_steps}
-                    onChange={value => setJobConfig(value, 'config.process[0].sample.sample_steps')}
-                    placeholder="eg. 1"
-                    className="pt-2"
-                    min={1}
-                    required
-                  />
-                </div>
-                {!isAudioModel && (
-                  <div>
-                    <NumberInput
-                      label="Width"
-                      value={jobConfig.config.process[0].sample.width}
-                      onChange={value => setJobConfig(value, 'config.process[0].sample.width')}
-                      placeholder="eg. 1024"
-                      min={0}
-                      required
-                    />
-                    <NumberInput
-                      label="Height"
-                      value={jobConfig.config.process[0].sample.height}
-                      onChange={value => setJobConfig(value, 'config.process[0].sample.height')}
-                      placeholder="eg. 1024"
-                      className="pt-2"
-                      min={0}
-                      required
-                    />
-                    {isVideoModel && (
-                      <div>
-                        <NumberInput
-                          label="Num Frames"
-                          value={jobConfig.config.process[0].sample.num_frames}
-                          onChange={value => setJobConfig(value, 'config.process[0].sample.num_frames')}
-                          placeholder="eg. 0"
-                          className="pt-2"
-                          min={0}
-                          required
-                        />
-                        <NumberInput
-                          label="FPS"
-                          value={jobConfig.config.process[0].sample.fps}
-                          onChange={value => setJobConfig(value, 'config.process[0].sample.fps')}
-                          placeholder="eg. 0"
-                          className="pt-2"
-                          min={0}
-                          required
-                        />
-                      </div>
-                    )}
-                  </div>
-                )}
-                <div>
-                  <NumberInput
-                    label="Seed"
-                    value={jobConfig.config.process[0].sample.seed}
-                    onChange={value => setJobConfig(value, 'config.process[0].sample.seed')}
-                    placeholder="eg. 0"
-                    min={0}
-                    required
-                  />
-                  <Checkbox
-                    label="Walk Seed"
-                    className="pt-4 pl-2"
-                    checked={jobConfig.config.process[0].sample.walk_seed}
-                    onChange={value => setJobConfig(value, 'config.process[0].sample.walk_seed')}
-                  />
-                </div>
-              </div>
-            </Card>
-          </div>
-        )}
         <div>
           <Card title="Training">
             <div className={trainingBarClass}>
@@ -1126,40 +1007,42 @@ export default function SimpleJob({
             </div>
           </Card>
         </div>
-        {!disableSections.includes('datasets') && (
+        {!disableSections.includes('datasets') && !isLiveVotingTrainer && (
           <div>
             <Card title="Datasets">
             <>
-              {datasets.map((dataset, i) => (
+              {visibleDatasets.map((dataset, i) => (
                 <div key={i} className="p-4 rounded-lg bg-gray-800 relative">
-                  <div className="absolute top-2 right-2 flex gap-1">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const duplicated = objectCopy(dataset);
-                        const nextDatasets = [...datasets];
-                        nextDatasets.splice(i + 1, 0, duplicated);
-                        setJobConfig(nextDatasets, 'config.process[0].datasets');
-                      }}
-                      className="bg-gray-700 hover:bg-gray-600 rounded-full p-2 text-sm transition-colors"
-                      title="Duplicate Dataset"
-                    >
-                      <Copy className="w-4 h-4" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setJobConfig(
-                          datasets.filter((_, index) => index !== i),
-                          'config.process[0].datasets',
-                        )
-                      }
-                      className="bg-red-600 hover:bg-red-700 text-white rounded-full p-2 text-sm transition-colors"
-                      title="Remove Dataset"
-                    >
-                      <X className="w-4 h-4" />
-                    </button>
-                  </div>
+                  {!isDiffusionKTODataset && (
+                    <div className="absolute top-2 right-2 flex gap-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const duplicated = objectCopy(dataset);
+                          const nextDatasets = [...datasets];
+                          nextDatasets.splice(i + 1, 0, duplicated);
+                          setJobConfig(nextDatasets, 'config.process[0].datasets');
+                        }}
+                        className="bg-gray-700 hover:bg-gray-600 rounded-full p-2 text-sm transition-colors"
+                        title="Duplicate Dataset"
+                      >
+                        <Copy className="w-4 h-4" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setJobConfig(
+                            datasets.filter((_, index) => index !== i),
+                            'config.process[0].datasets',
+                          )
+                        }
+                        className="bg-red-600 hover:bg-red-700 text-white rounded-full p-2 text-sm transition-colors"
+                        title="Remove Dataset"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+                  )}
                   <h2 className="text-lg font-bold mb-4">Dataset {i + 1}</h2>
                   <div className={datasetStyleClass}>
                     <div>
@@ -1169,7 +1052,7 @@ export default function SimpleJob({
                         onChange={value => setJobConfig(value, `config.process[0].datasets[${i}].folder_path`)}
                         options={datasetOptions}
                       />
-                      {modelArch?.additionalSections?.includes('datasets.control_path') && (
+                      {!isDiffusionKTODataset && modelArch?.additionalSections?.includes('datasets.control_path') && (
                         <SelectInput
                           label="Control Dataset"
                           docKey="datasets.control_path"
@@ -1181,7 +1064,7 @@ export default function SimpleJob({
                           options={[{ value: '', label: <>&nbsp;</> }, ...datasetOptions]}
                         />
                       )}
-                      {modelArch?.additionalSections?.includes('datasets.multi_control_paths') && (
+                      {!isDiffusionKTODataset && modelArch?.additionalSections?.includes('datasets.multi_control_paths') && (
                         <>
                           <SelectInput
                             label="Control Dataset 1"
@@ -1224,13 +1107,15 @@ export default function SimpleJob({
                           />
                         </>
                       )}
-                      <NumberInput
-                        label="LoRA Weight"
-                        value={dataset.network_weight}
-                        className="pt-2"
-                        onChange={value => setJobConfig(value, `config.process[0].datasets[${i}].network_weight`)}
-                        placeholder="eg. 1.0"
-                      />
+                      {!isDiffusionKTODataset && (
+                        <NumberInput
+                          label="LoRA Weight"
+                          value={dataset.network_weight}
+                          className="pt-2"
+                          onChange={value => setJobConfig(value, `config.process[0].datasets[${i}].network_weight`)}
+                          placeholder="eg. 1.0"
+                        />
+                      )}
                       <NumberInput
                         label="Num Repeats"
                         value={dataset.num_repeats || 1}
@@ -1247,15 +1132,19 @@ export default function SimpleJob({
                         onChange={value => setJobConfig(value, `config.process[0].datasets[${i}].default_caption`)}
                         placeholder="eg. A photo of a cat"
                       />
-                      <NumberInput
-                        label="Caption Dropout Rate"
-                        className="pt-2"
-                        value={dataset.caption_dropout_rate}
-                        onChange={value => setJobConfig(value, `config.process[0].datasets[${i}].caption_dropout_rate`)}
-                        placeholder="eg. 0.05"
-                        min={0}
-                        required
-                      />
+                      {!isDiffusionKTODataset && (
+                        <NumberInput
+                          label="Caption Dropout Rate"
+                          className="pt-2"
+                          value={dataset.caption_dropout_rate}
+                          onChange={value =>
+                            setJobConfig(value, `config.process[0].datasets[${i}].caption_dropout_rate`)
+                          }
+                          placeholder="eg. 0.05"
+                          min={0}
+                          required
+                        />
+                      )}
                       <CreatableSelectInput
                         label="Caption Extension"
                         className="pt-2"
@@ -1269,7 +1158,9 @@ export default function SimpleJob({
                         ]}
                       />
 
-                      {modelArch?.additionalSections?.includes('datasets.num_frames') && !dataset.auto_frame_count && (
+                      {!isDiffusionKTODataset &&
+                        modelArch?.additionalSections?.includes('datasets.num_frames') &&
+                        !dataset.auto_frame_count && (
                         <NumberInput
                           label="Num Frames"
                           className="pt-2"
@@ -1282,21 +1173,22 @@ export default function SimpleJob({
                         />
                       )}
                     </div>
-                    <div>
-                      <FormGroup label="Settings" className="">
-                        <Checkbox
-                          label="Cache Latents"
-                          checked={dataset.cache_latents_to_disk || false}
-                          onChange={value =>
-                            setJobConfig(value, `config.process[0].datasets[${i}].cache_latents_to_disk`)
-                          }
-                        />
-                        <Checkbox
-                          label="Is Regularization"
-                          checked={dataset.is_reg || false}
-                          onChange={value => setJobConfig(value, `config.process[0].datasets[${i}].is_reg`)}
-                        />
-                        {modelArch?.additionalSections?.includes('datasets.auto_frame_count') && (
+                    {!isDiffusionKTODataset && (
+                      <div>
+                        <FormGroup label="Settings" className="">
+                          <Checkbox
+                            label="Cache Latents"
+                            checked={dataset.cache_latents_to_disk || false}
+                            onChange={value =>
+                              setJobConfig(value, `config.process[0].datasets[${i}].cache_latents_to_disk`)
+                            }
+                          />
+                          <Checkbox
+                            label="Is Regularization"
+                            checked={dataset.is_reg || false}
+                            onChange={value => setJobConfig(value, `config.process[0].datasets[${i}].is_reg`)}
+                          />
+                          {modelArch?.additionalSections?.includes('datasets.auto_frame_count') && (
                           <Checkbox
                             label="Auto Frame Count"
                             checked={dataset.auto_frame_count || false}
@@ -1304,7 +1196,7 @@ export default function SimpleJob({
                             docKey="datasets.auto_frame_count"
                           />
                         )}
-                        {modelArch?.additionalSections?.includes('datasets.do_i2v') && (
+                          {modelArch?.additionalSections?.includes('datasets.do_i2v') && (
                           <Checkbox
                             label="Do I2V"
                             checked={dataset.do_i2v || false}
@@ -1312,7 +1204,7 @@ export default function SimpleJob({
                             docKey="datasets.do_i2v"
                           />
                         )}
-                        {modelArch?.additionalSections?.includes('datasets.do_audio') && (
+                          {modelArch?.additionalSections?.includes('datasets.do_audio') && (
                           <Checkbox
                             label="Do Audio"
                             checked={dataset.do_audio || false}
@@ -1326,7 +1218,7 @@ export default function SimpleJob({
                             docKey="datasets.do_audio"
                           />
                         )}
-                        {modelArch?.additionalSections?.includes('datasets.audio_normalize') && (
+                          {modelArch?.additionalSections?.includes('datasets.audio_normalize') && (
                           <Checkbox
                             label="Audio Normalize"
                             checked={dataset.audio_normalize || false}
@@ -1340,7 +1232,7 @@ export default function SimpleJob({
                             docKey="datasets.audio_normalize"
                           />
                         )}
-                        {modelArch?.additionalSections?.includes('datasets.audio_preserve_pitch') && (
+                          {modelArch?.additionalSections?.includes('datasets.audio_preserve_pitch') && (
                           <Checkbox
                             label="Audio Preserve Pitch"
                             checked={dataset.audio_preserve_pitch || false}
@@ -1354,9 +1246,9 @@ export default function SimpleJob({
                             docKey="datasets.audio_preserve_pitch"
                           />
                         )}
-                      </FormGroup>
-                      {!isAudioModel && (
-                        <FormGroup label="Flipping" docKey={'datasets.flip'} className="mt-2">
+                        </FormGroup>
+                        {!isAudioModel && (
+                          <FormGroup label="Flipping" docKey={'datasets.flip'} className="mt-2">
                           <Checkbox
                             label={
                               <>
@@ -1376,9 +1268,10 @@ export default function SimpleJob({
                             onChange={value => setJobConfig(value, `config.process[0].datasets[${i}].flip_y`)}
                           />
                         </FormGroup>
-                      )}
-                    </div>
-                    {!isAudioModel && (
+                        )}
+                      </div>
+                    )}
+                    {!isDiffusionKTODataset && !isAudioModel && (
                       <div>
                         <FormGroup label="Resolutions" className="pt-2">
                           <div className="grid grid-cols-2 gap-2">
@@ -1409,128 +1302,127 @@ export default function SimpleJob({
                   </div>
                 </div>
               ))}
-              <button
-                type="button"
-                onClick={() => {
-                  const newDataset = objectCopy(defaultDatasetConfig);
-                  // automaticallt add the controls for a new dataset
-                  const controls = modelArch?.controls ?? [];
-                  newDataset.controls = controls;
-                  setJobConfig([...datasets, newDataset], 'config.process[0].datasets');
-                }}
-                className="w-full px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg transition-colors"
-              >
-                Add Dataset
-              </button>
+              {!isDiffusionKTODataset && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const newDataset = objectCopy(defaultDatasetConfig);
+                    // automaticallt add the controls for a new dataset
+                    const controls = modelArch?.controls ?? [];
+                    newDataset.controls = controls;
+                    setJobConfig([...datasets, newDataset], 'config.process[0].datasets');
+                  }}
+                  className="w-full px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg transition-colors"
+                >
+                  Add Dataset
+                </button>
+              )}
             </>
             </Card>
           </div>
         )}
-        {!isLiveVotingTrainer && (
-          <div>
-            <Card title="Sample">
-            <div className={sampleTopStyleClass}>
-              <div>
-                {!isDiffusionKTO && (
-                  <NumberInput
-                    label="Sample Every"
-                    value={jobConfig.config.process[0].sample.sample_every}
-                    onChange={value => setJobConfig(value, 'config.process[0].sample.sample_every')}
-                    placeholder="eg. 250"
-                    min={1}
-                    required
-                  />
-                )}
-                <SelectInput
-                  label="Sampler"
-                  className="pt-2"
-                  value={jobConfig.config.process[0].sample.sampler}
-                  onChange={value => setJobConfig(value, 'config.process[0].sample.sampler')}
-                  options={[
-                    { value: 'flowmatch', label: 'FlowMatch' },
-                    { value: 'ddpm', label: 'DDPM' },
-                  ]}
-                />
+        <div>
+          <Card title="Sample">
+          <div className={sampleTopStyleClass}>
+            <div>
+              {!isFlowGRPO && !isLiveVotingTrainer && (
                 <NumberInput
-                  label="Guidance Scale"
-                  value={jobConfig.config.process[0].sample.guidance_scale}
-                  onChange={value => setJobConfig(value, 'config.process[0].sample.guidance_scale')}
-                  placeholder="eg. 1.0"
-                  className="pt-2"
-                  min={0}
-                  required
-                />
-                <NumberInput
-                  label="Sample Steps"
-                  value={jobConfig.config.process[0].sample.sample_steps}
-                  onChange={value => setJobConfig(value, 'config.process[0].sample.sample_steps')}
-                  placeholder="eg. 1"
-                  className="pt-2"
+                  label="Sample Every"
+                  value={jobConfig.config.process[0].sample.sample_every}
+                  onChange={value => setJobConfig(value, 'config.process[0].sample.sample_every')}
+                  placeholder="eg. 250"
                   min={1}
                   required
                 />
-              </div>
-
-              {!isAudioModel && (
-                <div>
-                  <NumberInput
-                    label="Width"
-                    value={jobConfig.config.process[0].sample.width}
-                    onChange={value => setJobConfig(value, 'config.process[0].sample.width')}
-                    placeholder="eg. 1024"
-                    min={0}
-                    required
-                  />
-                  <NumberInput
-                    label="Height"
-                    value={jobConfig.config.process[0].sample.height}
-                    onChange={value => setJobConfig(value, 'config.process[0].sample.height')}
-                    placeholder="eg. 1024"
-                    className="pt-2"
-                    min={0}
-                    required
-                  />
-                  {isVideoModel && (
-                    <div>
-                      <NumberInput
-                        label="Num Frames"
-                        value={jobConfig.config.process[0].sample.num_frames}
-                        onChange={value => setJobConfig(value, 'config.process[0].sample.num_frames')}
-                        placeholder="eg. 0"
-                        className="pt-2"
-                        min={0}
-                        required
-                      />
-                      <NumberInput
-                        label="FPS"
-                        value={jobConfig.config.process[0].sample.fps}
-                        onChange={value => setJobConfig(value, 'config.process[0].sample.fps')}
-                        placeholder="eg. 0"
-                        className="pt-2"
-                        min={0}
-                        required
-                      />
-                    </div>
-                  )}
-                </div>
               )}
+              <SelectInput
+                label="Sampler"
+                className={!isFlowGRPO && !isLiveVotingTrainer ? 'pt-2' : ''}
+                value={jobConfig.config.process[0].sample.sampler}
+                onChange={value => setJobConfig(value, 'config.process[0].sample.sampler')}
+                options={sampleSamplerOptions}
+              />
+              <NumberInput
+                label="Guidance Scale"
+                value={jobConfig.config.process[0].sample.guidance_scale}
+                onChange={value => setJobConfig(value, 'config.process[0].sample.guidance_scale')}
+                placeholder="eg. 1.0"
+                className="pt-2"
+                min={0}
+                required
+              />
+              <NumberInput
+                label="Sample Steps"
+                value={jobConfig.config.process[0].sample.sample_steps}
+                onChange={value => setJobConfig(value, 'config.process[0].sample.sample_steps')}
+                placeholder="eg. 1"
+                className="pt-2"
+                min={1}
+                required
+              />
+            </div>
 
+            {!isAudioModel && (
               <div>
                 <NumberInput
-                  label="Seed"
-                  value={jobConfig.config.process[0].sample.seed}
-                  onChange={value => setJobConfig(value, 'config.process[0].sample.seed')}
-                  placeholder="eg. 0"
+                  label="Width"
+                  value={jobConfig.config.process[0].sample.width}
+                  onChange={value => setJobConfig(value, 'config.process[0].sample.width')}
+                  placeholder="eg. 1024"
                   min={0}
                   required
                 />
-                <Checkbox
-                  label="Walk Seed"
-                  className="pt-4 pl-2"
-                  checked={jobConfig.config.process[0].sample.walk_seed}
-                  onChange={value => setJobConfig(value, 'config.process[0].sample.walk_seed')}
+                <NumberInput
+                  label="Height"
+                  value={jobConfig.config.process[0].sample.height}
+                  onChange={value => setJobConfig(value, 'config.process[0].sample.height')}
+                  placeholder="eg. 1024"
+                  className="pt-2"
+                  min={0}
+                  required
                 />
+                {isVideoModel && (
+                  <div>
+                    <NumberInput
+                      label="Num Frames"
+                      value={jobConfig.config.process[0].sample.num_frames}
+                      onChange={value => setJobConfig(value, 'config.process[0].sample.num_frames')}
+                      placeholder="eg. 0"
+                      className="pt-2"
+                      min={0}
+                      required
+                    />
+                    <NumberInput
+                      label="FPS"
+                      value={jobConfig.config.process[0].sample.fps}
+                      onChange={value => setJobConfig(value, 'config.process[0].sample.fps')}
+                      placeholder="eg. 0"
+                      className="pt-2"
+                      min={0}
+                      required
+                    />
+                  </div>
+                )}
               </div>
+            )}
+
+            <div>
+              <NumberInput
+                label="Seed"
+                value={jobConfig.config.process[0].sample.seed}
+                onChange={value => setJobConfig(value, 'config.process[0].sample.seed')}
+                placeholder="eg. 0"
+                min={0}
+                required
+              />
+              <Checkbox
+                label="Walk Seed"
+                className="pt-4 pl-2"
+                checked={jobConfig.config.process[0].sample.walk_seed}
+                onChange={value => setJobConfig(value, 'config.process[0].sample.walk_seed')}
+              />
+            </div>
+            {!isFlowGRPO && !isLiveVotingTrainer && (
               <div>
                 <FormGroup label="Advanced Sampling" className="pt-2">
                   <div>
@@ -1578,299 +1470,260 @@ export default function SimpleJob({
                   </div>
                 </FormGroup>
               </div>
-            </div>
-            <div className="pt-2 mb-2 flex items-center justify-between">
-              <label className="block text-xs text-gray-300">
-                Sample Prompts ({jobConfig.config.process[0].sample.samples.length})
-              </label>
-              {modelArch?.additionalSections?.includes('ideogram_4_prompt') && (
-                <button
-                  type="button"
-                  disabled={jobConfig.config.process[0].sample.samples.length === 0}
-                  onClick={() => {
-                    const sampleCfg = jobConfig.config.process[0].sample;
-                    const items = sampleCfg.samples
-                      .map((s, i) => ({
-                        index: i,
-                        prompt: s.prompt || '',
-                        aspectRatio: toAspectRatio(s.width || sampleCfg.width, s.height || sampleCfg.height),
-                      }))
-                      .filter(it => it.prompt.trim() !== '');
-                    if (items.length === 0) return;
-                    openUpsamplePromptsModal(items, (index, newPrompt) => {
-                      setJobConfig(newPrompt, `config.process[0].sample.samples[${index}].prompt`);
-                    });
-                  }}
-                  className="px-3 py-1.5 text-sm bg-purple-600 hover:bg-purple-700 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-md inline-flex items-center gap-2"
-                >
-                  <Wand2 className="w-4 h-4" />
-                  Upsample Prompts
-                </button>
-              )}
-            </div>
-            {jobConfig.config.process[0].sample.samples.map((sample, i) => (
-              <div key={i} className="rounded-lg pl-4 pr-1 mb-4 bg-gray-950">
-                <div className="flex items-center space-x-2">
-                  <div className="flex-1">
-                    <div className="flex">
-                      <div className="flex-1">
-                        {modelArch?.sampleTags && taggedSampleArr && modelArchTagSections ? (
-                          <>
-                            {modelArchTagSections.map((sampleTagSection, sti) => (
-                              <div key={sti} className="grid w-full lg:grid-flow-col lg:auto-cols-fr gap-4 mt-2">
-                                {Object.entries(sampleTagSection).map(([tagKey, tag]) => (
-                                  <div key={tagKey} className="mb-2">
-                                    {tag.type === 'text' && (
-                                      <TextInput
-                                        label={tag.title}
-                                        value={taggedSampleArr[i][tagKey] ?? ''}
-                                        onChange={value => {
-                                          let taggedSample = { ...taggedSampleArr[i] };
-                                          taggedSample[tagKey] = value;
-                                          setJobConfig(
-                                            objToTags(taggedSample),
-                                            `config.process[0].sample.samples[${i}].prompt`,
-                                          );
-                                        }}
-                                        placeholder={`Enter ${tag.title.toLowerCase()}`}
-                                      />
-                                    )}
-                                    {tag.type === 'multiline' && (
-                                      <TextAreaInput
-                                        label={tag.title}
-                                        value={taggedSampleArr[i][tagKey] ?? ''}
-                                        onChange={value => {
-                                          let taggedSample = { ...taggedSampleArr[i] };
-                                          taggedSample[tagKey] = value;
-                                          setJobConfig(
-                                            objToTags(taggedSample),
-                                            `config.process[0].sample.samples[${i}].prompt`,
-                                          );
-                                        }}
-                                        placeholder={`Enter ${tag.title.toLowerCase()}`}
-                                      />
-                                    )}
-                                    {tag.type === 'number' && (
-                                      <NumberInput
-                                        label={tag.title}
-                                        value={taggedSampleArr[i][tagKey] ?? ''}
-                                        onChange={value => {
-                                          let taggedSample = { ...taggedSampleArr[i] };
-                                          taggedSample[tagKey] = value;
-                                          setJobConfig(
-                                            objToTags(taggedSample),
-                                            `config.process[0].sample.samples[${i}].prompt`,
-                                          );
-                                        }}
-                                        placeholder={`Enter ${tag.title.toLowerCase()}`}
-                                      />
-                                    )}
-                                  </div>
-                                ))}
-                              </div>
-                            ))}
-                          </>
-                        ) : (
-                          <>
-                            {modelArch?.hasMultiLinePrompts ? (
-                              <TextAreaInput
-                                label={`Prompt`}
-                                value={sample.prompt}
-                                onChange={value => setJobConfig(value, `config.process[0].sample.samples[${i}].prompt`)}
-                                placeholder="Enter prompt"
-                                required
-                              />
-                            ) : (
-                              <TextInput
-                                label={`Prompt`}
-                                value={sample.prompt}
-                                onChange={value => setJobConfig(value, `config.process[0].sample.samples[${i}].prompt`)}
-                                placeholder="Enter prompt"
-                                required
-                              />
+            )}
+          </div>
+          {!isFlowGRPO && !isLiveVotingTrainer && (
+            <>
+              <div className="pt-2 mb-2 flex items-center justify-between">
+                <label className="block text-xs text-gray-300">
+                  Sample Prompts ({jobConfig.config.process[0].sample.samples.length})
+                </label>
+                {modelArch?.additionalSections?.includes('ideogram_4_prompt') && (
+                  <button
+                    type="button"
+                    disabled={jobConfig.config.process[0].sample.samples.length === 0}
+                    onClick={() => {
+                      const sampleCfg = jobConfig.config.process[0].sample;
+                      const items = sampleCfg.samples
+                        .map((s, i) => ({
+                          index: i,
+                          prompt: s.prompt || '',
+                          aspectRatio: toAspectRatio(s.width || sampleCfg.width, s.height || sampleCfg.height),
+                        }))
+                        .filter(it => it.prompt.trim() !== '');
+                      if (items.length === 0) return;
+                      openUpsamplePromptsModal(items, (index, newPrompt) => {
+                        setJobConfig(newPrompt, `config.process[0].sample.samples[${index}].prompt`);
+                      });
+                    }}
+                    className="px-3 py-1.5 text-sm bg-purple-600 hover:bg-purple-700 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-md inline-flex items-center gap-2"
+                  >
+                    <Wand2 className="w-4 h-4" />
+                    Upsample Prompts
+                  </button>
+                )}
+              </div>
+              {jobConfig.config.process[0].sample.samples.map((sample, i) => (
+                <div key={i} className="rounded-lg pl-4 pr-1 mb-4 bg-gray-950">
+                  <div className="flex items-center space-x-2">
+                    <div className="flex-1">
+                      <div className="flex">
+                        <div className="flex-1">
+                          {modelArch?.sampleTags && taggedSampleArr && modelArchTagSections ? (
+                            <>
+                              {modelArchTagSections.map((sampleTagSection, sti) => (
+                                <div key={sti} className="grid w-full lg:grid-flow-col lg:auto-cols-fr gap-4 mt-2">
+                                  {Object.entries(sampleTagSection).map(([tagKey, tag]) => (
+                                    <div key={tagKey} className="mb-2">
+                                      {tag.type === 'text' && (
+                                        <TextInput
+                                          label={tag.title}
+                                          value={taggedSampleArr[i][tagKey] ?? ''}
+                                          onChange={value => {
+                                            setJobConfig(
+                                              objToTags({ ...taggedSampleArr[i], [tagKey]: value }),
+                                              `config.process[0].sample.samples[${i}].prompt`,
+                                            );
+                                          }}
+                                        />
+                                      )}
+                                      {tag.type === 'number' && (
+                                        <NumberInput
+                                          label={tag.title}
+                                          value={taggedSampleArr[i][tagKey] ?? ''}
+                                          onChange={value => {
+                                            setJobConfig(
+                                              objToTags({ ...taggedSampleArr[i], [tagKey]: value }),
+                                              `config.process[0].sample.samples[${i}].prompt`,
+                                            );
+                                          }}
+                                        />
+                                      )}
+                                      {tag.type === 'multiline' && (
+                                        <TextAreaInput
+                                          label={tag.title}
+                                          value={taggedSampleArr[i][tagKey] ?? ''}
+                                          onChange={value => {
+                                            setJobConfig(
+                                              objToTags({ ...taggedSampleArr[i], [tagKey]: value }),
+                                              `config.process[0].sample.samples[${i}].prompt`,
+                                            );
+                                          }}
+                                        />
+                                      )}
+                                    </div>
+                                  ))}
+                                </div>
+                              ))}
+                            </>
+                          ) : (
+                            <div className="relative w-full pt-2">
+                              {modelArch?.hasMultiLinePrompts ? (
+                                <TextAreaInput
+                                  label="Prompt"
+                                  value={sample.prompt}
+                                  onChange={value => setJobConfig(value, `config.process[0].sample.samples[${i}].prompt`)}
+                                />
+                              ) : (
+                                <TextInput
+                                  label="Prompt"
+                                  value={sample.prompt}
+                                  onChange={value => setJobConfig(value, `config.process[0].sample.samples[${i}].prompt`)}
+                                />
+                              )}
+                              {modelArch?.additionalSections?.includes('ideogram_4_prompt') && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const sampleCfg = jobConfig.config.process[0].sample;
+                                    openPromptBoxEditor({
+                                      prompt: sample.prompt || '',
+                                      aspectRatio: toAspectRatio(
+                                        sample.width || sampleCfg.width,
+                                        sample.height || sampleCfg.height,
+                                      ),
+                                      title: `Prompt #${i + 1}`,
+                                      onApply: newPrompt =>
+                                        setJobConfig(newPrompt, `config.process[0].sample.samples[${i}].prompt`),
+                                    });
+                                  }}
+                                  className="absolute top-2 right-2 px-2 py-1 text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-md inline-flex items-center gap-1"
+                                >
+                                  <SquareDashed className="w-3.5 h-3.5" />
+                                  Edit caption &amp; boxes
+                                </button>
+                              )}
+                            </div>
+                          )}
+                          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-2 mb-2">
+                            {!isAudioModel && (
+                              <>
+                                <NumberInput
+                                  label="Width"
+                                  value={sample.width ?? ''}
+                                  onChange={value => {
+                                    const intValue = parseInt(value as any, 10);
+                                    if (isNaN(intValue)) {
+                                      const newConfig = objectCopy(jobConfig);
+                                      if (newConfig.config.process[0].sample.samples[i]) {
+                                        delete newConfig.config.process[0].sample.samples[i].width;
+                                        setJobConfig(
+                                          newConfig.config.process[0].sample.samples,
+                                          'config.process[0].sample.samples',
+                                        );
+                                      }
+                                    } else {
+                                      setJobConfig(intValue, `config.process[0].sample.samples[${i}].width`);
+                                    }
+                                  }}
+                                  placeholder={`${jobConfig.config.process[0].sample.width}`}
+                                  min={0}
+                                />
+                                <NumberInput
+                                  label="Height"
+                                  value={sample.height ?? ''}
+                                  onChange={value => {
+                                    const intValue = parseInt(value as any, 10);
+                                    if (isNaN(intValue)) {
+                                      const newConfig = objectCopy(jobConfig);
+                                      if (newConfig.config.process[0].sample.samples[i]) {
+                                        delete newConfig.config.process[0].sample.samples[i].height;
+                                        setJobConfig(
+                                          newConfig.config.process[0].sample.samples,
+                                          'config.process[0].sample.samples',
+                                        );
+                                      }
+                                    } else {
+                                      setJobConfig(intValue, `config.process[0].sample.samples[${i}].height`);
+                                    }
+                                  }}
+                                  placeholder={`${jobConfig.config.process[0].sample.height}`}
+                                  min={0}
+                                />
+                              </>
                             )}
-                          </>
-                        )}
-
-                        {modelArch?.additionalSections?.includes('ideogram_4_prompt') && (
-                          <div className="mt-2">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                const sampleCfg = jobConfig.config.process[0].sample;
-                                openPromptBoxEditor({
-                                  prompt: sample.prompt || '',
-                                  aspectRatio: toAspectRatio(
-                                    sample.width || sampleCfg.width,
-                                    sample.height || sampleCfg.height,
-                                  ),
-                                  title: `Prompt #${i + 1}`,
-                                  onApply: newPrompt =>
-                                    setJobConfig(newPrompt, `config.process[0].sample.samples[${i}].prompt`),
-                                });
-                              }}
-                              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md border border-gray-600 text-gray-300 hover:bg-gray-800 transition-colors"
-                            >
-                              <SquareDashed className="w-3.5 h-3.5" />
-                              Edit caption &amp; boxes
-                            </button>
-                          </div>
-                        )}
-
-                        <div className="grid w-full lg:grid-flow-col lg:auto-cols-fr gap-4 mt-2">
-                          {!isAudioModel && (
-                            <TextInput
-                              label={`Width`}
-                              value={sample.width ? `${sample.width}` : ''}
+                            <NumberInput
+                              label="Seed"
+                              value={sample.seed ?? ''}
                               onChange={value => {
-                                // remove any non-numeric characters
-                                value = value.replace(/\D/g, '');
-                                if (value === '') {
-                                  // remove the key from the config if empty
-                                  let newConfig = objectCopy(jobConfig);
+                                const intValue = parseInt(value as any, 10);
+                                if (isNaN(intValue)) {
+                                  const newConfig = objectCopy(jobConfig);
                                   if (newConfig.config.process[0].sample.samples[i]) {
-                                    delete newConfig.config.process[0].sample.samples[i].width;
+                                    delete newConfig.config.process[0].sample.samples[i].seed;
                                     setJobConfig(
                                       newConfig.config.process[0].sample.samples,
                                       'config.process[0].sample.samples',
                                     );
                                   }
                                 } else {
-                                  const intValue = parseInt(value);
-                                  if (!isNaN(intValue)) {
-                                    setJobConfig(intValue, `config.process[0].sample.samples[${i}].width`);
-                                  } else {
-                                    console.warn('Invalid width value:', value);
-                                  }
-                                }
-                              }}
-                              placeholder={`${jobConfig.config.process[0].sample.width} (default)`}
-                            />
-                          )}
-                          {!isAudioModel && (
-                            <TextInput
-                              label={`Height`}
-                              value={sample.height ? `${sample.height}` : ''}
-                              onChange={value => {
-                                // remove any non-numeric characters
-                                value = value.replace(/\D/g, '');
-                                if (value === '') {
-                                  // remove the key from the config if empty
-                                  let newConfig = objectCopy(jobConfig);
-                                  if (newConfig.config.process[0].sample.samples[i]) {
-                                    delete newConfig.config.process[0].sample.samples[i].height;
-                                    setJobConfig(
-                                      newConfig.config.process[0].sample.samples,
-                                      'config.process[0].sample.samples',
-                                    );
-                                  }
-                                } else {
-                                  const intValue = parseInt(value);
-                                  if (!isNaN(intValue)) {
-                                    setJobConfig(intValue, `config.process[0].sample.samples[${i}].height`);
-                                  } else {
-                                    console.warn('Invalid height value:', value);
-                                  }
-                                }
-                              }}
-                              placeholder={`${jobConfig.config.process[0].sample.height} (default)`}
-                            />
-                          )}
-                          <TextInput
-                            label={`Seed`}
-                            value={sample.seed ? `${sample.seed}` : ''}
-                            onChange={value => {
-                              // remove any non-numeric characters
-                              value = value.replace(/\D/g, '');
-                              if (value === '') {
-                                // remove the key from the config if empty
-                                let newConfig = objectCopy(jobConfig);
-                                if (newConfig.config.process[0].sample.samples[i]) {
-                                  delete newConfig.config.process[0].sample.samples[i].seed;
-                                  setJobConfig(
-                                    newConfig.config.process[0].sample.samples,
-                                    'config.process[0].sample.samples',
-                                  );
-                                }
-                              } else {
-                                const intValue = parseInt(value);
-                                if (!isNaN(intValue)) {
                                   setJobConfig(intValue, `config.process[0].sample.samples[${i}].seed`);
-                                } else {
-                                  console.warn('Invalid seed value:', value);
                                 }
-                              }
-                            }}
-                            placeholder={`${jobConfig.config.process[0].sample.walk_seed ? jobConfig.config.process[0].sample.seed + i : jobConfig.config.process[0].sample.seed} (default)`}
-                          />
-                          <TextInput
-                            label={`LoRA Scale`}
-                            value={sample.network_multiplier ? `${sample.network_multiplier}` : ''}
-                            onChange={value => {
-                              // remove any non-numeric, - or . characters
-                              value = value.replace(/[^0-9.-]/g, '');
-                              if (value === '') {
-                                // remove the key from the config if empty
-                                let newConfig = objectCopy(jobConfig);
-                                if (newConfig.config.process[0].sample.samples[i]) {
-                                  delete newConfig.config.process[0].sample.samples[i].network_multiplier;
-                                  setJobConfig(
-                                    newConfig.config.process[0].sample.samples,
-                                    'config.process[0].sample.samples',
-                                  );
+                              }}
+                              placeholder={`${jobConfig.config.process[0].sample.seed}`}
+                              min={0}
+                            />
+                            <NumberInput
+                              label="LoRA Weight"
+                              value={sample.network_multiplier ?? ''}
+                              onChange={value => {
+                                if (value === '' || value === undefined || value === null) {
+                                  const newConfig = objectCopy(jobConfig);
+                                  if (newConfig.config.process[0].sample.samples[i]) {
+                                    delete newConfig.config.process[0].sample.samples[i].network_multiplier;
+                                    setJobConfig(
+                                      newConfig.config.process[0].sample.samples,
+                                      'config.process[0].sample.samples',
+                                    );
+                                  }
+                                  return;
                                 }
-                              } else {
-                                // set it as a string
                                 setJobConfig(value, `config.process[0].sample.samples[${i}].network_multiplier`);
-                                return;
-                              }
-                            }}
-                            placeholder={`1.0 (default)`}
-                          />
+                              }}
+                              placeholder="1.0"
+                              min={0}
+                            />
+                          </div>
+                          {modelArch?.additionalSections?.includes('datasets.multi_control_paths') && (
+                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-2">
+                              {[1, 2, 3].map(num => {
+                                const ctrlKey = `ctrl_img_${num}`;
+                                return (
+                                  <SampleControlImage
+                                    key={ctrlKey}
+                                    instruction={`Add Control Image ${num}`}
+                                    src={sample[ctrlKey] || null}
+                                    onNewImageSelected={imagePath => {
+                                      if (!imagePath) {
+                                        let newSamples = objectCopy(jobConfig.config.process[0].sample.samples);
+                                        delete newSamples[i][ctrlKey];
+                                        setJobConfig(newSamples, 'config.process[0].sample.samples');
+                                      } else {
+                                        setJobConfig(imagePath, `config.process[0].sample.samples[${i}].${ctrlKey}`);
+                                      }
+                                    }}
+                                  />
+                                );
+                              })}
+                            </div>
+                          )}
+                          {modelArch?.additionalSections?.includes('sample.ctrl_img') && (
+                            <SampleControlImage
+                              src={sample.ctrl_img || null}
+                              onNewImageSelected={imagePath => {
+                                if (!imagePath) {
+                                  let newSamples = objectCopy(jobConfig.config.process[0].sample.samples);
+                                  delete newSamples[i].ctrl_img;
+                                  setJobConfig(newSamples, 'config.process[0].sample.samples');
+                                } else {
+                                  setJobConfig(imagePath, `config.process[0].sample.samples[${i}].ctrl_img`);
+                                }
+                              }}
+                            />
+                          )}
                         </div>
                       </div>
-                      {modelArch?.additionalSections?.includes('datasets.multi_control_paths') && (
-                        <FormGroup label="Control Images" className="pt-2 ml-4">
-                          <div className="grid grid-cols-1 md:grid-cols-3 gap-2 mt-2 mt-2">
-                            {['ctrl_img_1', 'ctrl_img_2', 'ctrl_img_3'].map((ctrlKey, ctrl_idx) => (
-                              <SampleControlImage
-                                key={ctrlKey}
-                                instruction={`Add Control Image ${ctrl_idx + 1}`}
-                                className=""
-                                src={sample[ctrlKey as keyof typeof sample] as string}
-                                onNewImageSelected={imagePath => {
-                                  if (!imagePath) {
-                                    let newSamples = objectCopy(jobConfig.config.process[0].sample.samples);
-                                    delete newSamples[i][ctrlKey as keyof typeof sample];
-                                    setJobConfig(newSamples, 'config.process[0].sample.samples');
-                                  } else {
-                                    setJobConfig(imagePath, `config.process[0].sample.samples[${i}].${ctrlKey}`);
-                                  }
-                                }}
-                              />
-                            ))}
-                          </div>
-                        </FormGroup>
-                      )}
-                      {modelArch?.additionalSections?.includes('sample.ctrl_img') && (
-                        <SampleControlImage
-                          className="mt-6 ml-4"
-                          src={sample.ctrl_img}
-                          onNewImageSelected={imagePath => {
-                            if (!imagePath) {
-                              let newSamples = objectCopy(jobConfig.config.process[0].sample.samples);
-                              delete newSamples[i].ctrl_img;
-                              setJobConfig(newSamples, 'config.process[0].sample.samples');
-                            } else {
-                              setJobConfig(imagePath, `config.process[0].sample.samples[${i}].ctrl_img`);
-                            }
-                          }}
-                        />
-                      )}
                     </div>
-                    <div className="pb-4"></div>
-                  </div>
-                  <div>
                     <button
                       type="button"
                       onClick={() =>
@@ -1879,29 +1732,29 @@ export default function SimpleJob({
                           'config.process[0].sample.samples',
                         )
                       }
-                      className="rounded-full p-1 text-sm"
+                      className="w-8 h-8 flex items-center justify-center bg-red-600 hover:bg-red-700 text-white rounded-full text-sm transition-colors"
                     >
-                      <X />
+                      <X className="w-4 h-4" />
                     </button>
                   </div>
                 </div>
-              </div>
-            ))}
-            <button
-              type="button"
-              onClick={() =>
-                setJobConfig(
-                  [...jobConfig.config.process[0].sample.samples, { prompt: '' }],
-                  'config.process[0].sample.samples',
-                )
-              }
-              className="w-full px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg transition-colors"
-            >
-              Add Prompt
-            </button>
-            </Card>
-          </div>
-        )}
+              ))}
+              <button
+                type="button"
+                onClick={() =>
+                  setJobConfig(
+                    [...jobConfig.config.process[0].sample.samples, { prompt: '' }],
+                    'config.process[0].sample.samples',
+                  )
+                }
+                className="w-full px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg transition-colors"
+              >
+                Add Sample
+              </button>
+            </>
+          )}
+          </Card>
+        </div>
 
         {status === 'success' && <p className="text-green-500 text-center">Training saved successfully!</p>}
         {status === 'error' && <p className="text-red-500 text-center">Error saving training. Please try again.</p>}

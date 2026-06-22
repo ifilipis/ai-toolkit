@@ -44,6 +44,9 @@ function normalizeDiffusionKTOJobConfig(jobConfig: any) {
   process.kto.beta = Number.isFinite(Number(process.kto.beta)) ? Number(process.kto.beta) : 1000;
   process.kto.lambda_d = Number.isFinite(Number(process.kto.lambda_d)) ? Number(process.kto.lambda_d) : 1;
   process.kto.lambda_u = Number.isFinite(Number(process.kto.lambda_u)) ? Number(process.kto.lambda_u) : 1;
+  process.kto.positive_ratio = Number.isFinite(Number(process.kto.positive_ratio))
+    ? Math.min(1, Math.max(0, Number(process.kto.positive_ratio)))
+    : 0.5;
   process.kto.halo = process.kto.halo || 'sigmoid';
   process.kto.bce_offset = ['none', 'sigmoid', 'original'].includes(process.kto.bce_offset)
     ? process.kto.bce_offset
@@ -55,9 +58,18 @@ function normalizeDiffusionKTOJobConfig(jobConfig: any) {
   if (process.kto.dataset_enabled && !process.datasets?.[0]?.folder_path) {
     throw new Error('Diffusion-KTO dataset mode requires config.process[0].datasets[0].folder_path');
   }
-  process.train.disable_sampling = true;
-  process.sample.sample_every = 0;
-  process.sample.samples = [];
+  if (!process.kto.dataset_enabled) {
+    process.train.disable_sampling = true;
+    process.sample.sample_every = 0;
+    process.sample.samples = [];
+    return jobConfig;
+  }
+  if (!process.sample.sample_every) {
+    process.sample.sample_every = 250;
+  }
+  if (!Array.isArray(process.sample.samples)) {
+    process.sample.samples = [];
+  }
   return jobConfig;
 }
 

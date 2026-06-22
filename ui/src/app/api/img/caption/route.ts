@@ -19,6 +19,9 @@ export async function POST(request: Request) {
 
     // check for caption (default extension txt)
     const captionExt = ((ext || 'txt') as string).replace(/^\.+/, '').trim() || 'txt';
+    if (captionExt === 'comfyui') {
+      return NextResponse.json({ success: true });
+    }
     const captionPath = imgPath.replace(/\.[^/.]+$/, '') + '.' + captionExt;
     // save caption to file
     fs.writeFileSync(captionPath, caption);

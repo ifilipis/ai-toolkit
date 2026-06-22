@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import fs from 'fs';
 import path from 'path';
 import { getDatasetsRoot } from '@/server/settings';
+import { getComfyuiCaptionsFromPngMetadata } from '@/server/comfyCaption';
 
 function isUnderRoot(filepath: string, root: string): boolean {
   const resolved = path.resolve(filepath);
@@ -44,6 +45,16 @@ export async function POST(request: NextRequest) {
     if (!isAllowed) {
       console.warn(`Access denied: ${filepath} not in ${allowedDir}`);
       return new NextResponse('Access denied', { status: 403 });
+    }
+
+    if (captionExt === 'comfyui') {
+      try {
+        const comfyuiCaptions = getComfyuiCaptionsFromPngMetadata([filepath]);
+        return new NextResponse(comfyuiCaptions[filepath] || '');
+      } catch (e) {
+        console.error('Failed to get comfyui caption:', e);
+        return new NextResponse('');
+      }
     }
 
     // Check if file exists

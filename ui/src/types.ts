@@ -246,6 +246,7 @@ export interface DiffusionKTOConfig {
   beta: number;
   lambda_d: number;
   lambda_u: number;
+  positive_ratio: number;
   halo: 'sigmoid';
   bce_offset: 'none' | 'sigmoid' | 'original';
   group_size: number;

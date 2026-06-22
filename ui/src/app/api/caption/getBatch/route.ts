@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import fs from 'fs';
 import path from 'path';
 import { getDatasetsRoot } from '@/server/settings';
+import { getComfyuiCaptionsFromPngMetadata } from '@/server/comfyCaption';
 
 function isUnderRoot(filepath: string, root: string): boolean {
   const resolved = path.resolve(filepath);
@@ -29,6 +30,24 @@ export async function POST(request: NextRequest) {
   const captionExt = ((ext || 'txt') as string).replace(/^\.+/, '').trim() || 'txt';
   const allowedDir = await getDatasetsRoot();
   const captions: Record<string, string> = {};
+
+  if (captionExt === 'comfyui') {
+    try {
+      const allowedPaths = imgPaths.filter(p => typeof p === 'string' && isUnderRoot(p, allowedDir));
+      const comfyuiCaptions = getComfyuiCaptionsFromPngMetadata(allowedPaths);
+      for (const imgPath of imgPaths) {
+        if (typeof imgPath !== 'string') continue;
+        captions[imgPath] = comfyuiCaptions[imgPath] || '';
+      }
+    } catch (e) {
+      console.error('Failed to get comfyui captions:', e);
+      for (const imgPath of imgPaths) {
+        if (typeof imgPath !== 'string') continue;
+        captions[imgPath] = '';
+      }
+    }
+    return NextResponse.json({ captions });
+  }
 
   for (const imgPath of imgPaths) {
     if (typeof imgPath !== 'string') continue;
