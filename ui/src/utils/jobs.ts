@@ -94,6 +94,10 @@ export const isFlowGRPOJob = (job: Job) => {
   return getProcessType(job) === 'flow_grpo_trainer';
 };
 
+export const isDiffusionDPOJob = (job: Job) => {
+  return getProcessType(job) === 'diffusion_dpo_trainer';
+};
+
 export const getAvaliableJobActions = (job: Job) => {
   const jobConfig = getJobConfig(job);
   const isStopping = job.stop && job.status === 'running';

@@ -1,7 +1,7 @@
 'use client';
 import { isMac } from '@/helpers/basic';
 import { defaultSampleConfig } from '@/helpers/defaultSamples';
-import { JobConfig, SampleConfig, DatasetConfig, SliderConfig, FlowGRPOConfig } from '@/types';
+import { JobConfig, SampleConfig, DatasetConfig, SliderConfig, FlowGRPOConfig, DiffusionDPOConfig } from '@/types';
 
 export const defaultDatasetConfig: DatasetConfig = {
   folder_path: '/path/to/images/folder',
@@ -43,6 +43,11 @@ export const defaultFlowGRPOConfig: FlowGRPOConfig = {
   sde_type: 'sde',
   timestep_fraction: 1.0,
   group_size: 4,
+};
+
+export const defaultDiffusionDPOConfig: DiffusionDPOConfig = {
+  objective: 'classic',
+  beta: 5000,
 };
 
 export const defaultJobConfig: JobConfig = {

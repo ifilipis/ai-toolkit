@@ -4,16 +4,22 @@ import { PrismaClient } from '@prisma/client';
 const prisma = new PrismaClient();
 
 const ACTIVE_TASK_STATUSES = new Set(['requested', 'generating', 'open', 'voted']);
+const FLOW_GRPO_TRAINER_TYPE = 'flow_grpo_trainer';
 
 export async function POST(
   _request: Request,
   { params }: { params: { jobID: string; taskID: string } },
 ) {
   try {
-    const task = await prisma.flowGRPOVoteTask.findFirst({
+    const job = await prisma.job.findUnique({ where: { id: params.jobID } });
+    const trainerType = job
+      ? `${JSON.parse(job.job_config)?.config?.process?.[0]?.type || FLOW_GRPO_TRAINER_TYPE}`
+      : FLOW_GRPO_TRAINER_TYPE;
+    const task = await (prisma.flowGRPOVoteTask as any).findFirst({
       where: {
         id: params.taskID,
         job_id: params.jobID,
+        trainer_type: trainerType,
       },
       select: {
         id: true,
@@ -44,4 +50,3 @@ export async function POST(
     return NextResponse.json({ error: 'Failed to hide Flow-GRPO vote task' }, { status: 500 });
   }
 }
-

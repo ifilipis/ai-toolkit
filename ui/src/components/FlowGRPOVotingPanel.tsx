@@ -11,6 +11,7 @@ import useFlowGRPOVoteTasks, { FlowGRPOVoteTaskView } from '@/hooks/useFlowGRPOV
 import { FlowGRPOLiveTaskConfig, JobConfig } from '@/types';
 import SampleControlImage from '@/components/SampleControlImage';
 import { getVotingInputImageMode } from '@/utils/modelCapabilities';
+import { isDiffusionDPOJob } from '@/utils/jobs';
 
 type Props = {
   job: Job;
@@ -43,6 +44,22 @@ const voteDisplay: Record<string, { label: string; className: string }> = {
 };
 
 const activeTaskStatuses = new Set(['requested', 'generating', 'open', 'voted']);
+const aitkSamplerOptions = [
+  { value: 'flowmatch', label: 'FlowMatch' },
+  { value: 'ddpm', label: 'DDPM' },
+];
+const aitkSchedulerOptions = [
+  { value: 'flowmatch', label: 'FlowMatch' },
+  { value: 'ddpm', label: 'DDPM' },
+];
+const flowGRPOSamplerOptions = [
+  { value: 'flowmatch_step_with_logprob', label: 'FlowMatch Step With LogProb' },
+];
+
+const withCurrentOption = (options: Array<{ value: string; label: string }>, value?: string | null) => {
+  if (!value || options.some(option => option.value === value)) return options;
+  return [{ value, label: value }, ...options];
+};
 
 type FlowGRPOLiveTaskDraft = Omit<
   FlowGRPOLiveTaskConfig,
@@ -74,6 +91,7 @@ const randomSeed = () => Math.floor(Math.random() * 2147483647);
 const getTaskDefaults = (job: Job): FlowGRPOLiveTaskConfig => {
   const jobConfig = JSON.parse(job.job_config) as JobConfig;
   const process = jobConfig.config.process[0];
+  const isDPO = process.type === 'diffusion_dpo_trainer';
   return {
     prompt: '',
     negative_prompt: process.sample?.neg || '',
@@ -86,8 +104,8 @@ const getTaskDefaults = (job: Job): FlowGRPOLiveTaskConfig => {
     ctrl_img_3: process.sample?.ctrl_img_3 || null,
     guidance_scale: process.sample?.guidance_scale || 4,
     num_inference_steps: process.sample?.sample_steps || 30,
-    sampler: process.sample?.sampler || 'flowmatch_step_with_logprob',
-    scheduler: process.train?.noise_scheduler || 'flowmatch_step_with_logprob',
+    sampler: process.sample?.sampler || (isDPO ? 'flowmatch' : 'flowmatch_step_with_logprob'),
+    scheduler: process.train?.noise_scheduler || (isDPO ? 'flowmatch' : 'flowmatch_step_with_logprob'),
   };
 };
 
@@ -179,9 +197,16 @@ const formatTqdmDuration = (seconds: number) => {
 export default function FlowGRPOVotingPanel({ job, compact = false }: Props) {
   const jobConfig = JSON.parse(job.job_config) as JobConfig;
   const process = jobConfig.config.process[0];
+  const pairwise = isDiffusionDPOJob(job);
   const inputImageMode = getVotingInputImageMode(process.model?.arch);
-  const targetCandidates = process.grpo?.group_size || 4;
+  const targetCandidates = pairwise ? 2 : (process.grpo?.group_size || 4);
   const defaultTaskValues = useMemo(() => getTaskDefaults(job), [job]);
+  const samplerOptions = pairwise
+    ? withCurrentOption(aitkSamplerOptions, process.sample?.sampler)
+    : flowGRPOSamplerOptions;
+  const schedulerOptions = pairwise
+    ? withCurrentOption(aitkSchedulerOptions, process.train?.noise_scheduler)
+    : flowGRPOSamplerOptions;
 
   const { tasks, status, refreshTasks } = useFlowGRPOVoteTasks(job.id, 3000);
   const [submittingTaskId, setSubmittingTaskId] = useState<string | null>(null);
@@ -411,7 +436,14 @@ export default function FlowGRPOVotingPanel({ job, compact = false }: Props) {
         )}
 
         {task.candidates.length > 0 && (
-          <div className="mt-3 grid gap-3 [grid-template-columns:repeat(auto-fill,minmax(220px,1fr))]">
+          <div
+            className={classNames(
+              'mt-3 grid gap-3',
+              pairwise
+                ? 'grid-cols-1 md:grid-cols-2'
+                : '[grid-template-columns:repeat(auto-fill,minmax(220px,1fr))]',
+            )}
+          >
             {task.candidates.map(candidate => (
               <div key={candidate.id} className="overflow-hidden rounded-lg border border-gray-800 bg-gray-900">
                 <img src={candidate.image_url} alt={candidate.prompt} className="aspect-[4/5] w-full bg-black object-cover" />
@@ -478,14 +510,16 @@ export default function FlowGRPOVotingPanel({ job, compact = false }: Props) {
                 : 'bg-blue-600 text-white hover:bg-blue-500',
             )}
           >
-            Submit Group Vote
+            {pairwise ? 'Submit Pair Vote' : 'Submit Group Vote'}
           </Button>
         )}
       </div>
     );
   };
 
-  const activeSectionTitle = compact ? `Flow-GRPO: ${job.name}` : 'Generation & Voting';
+  const activeSectionTitle = compact
+    ? `${pairwise ? 'Diffusion-DPO' : 'Flow-GRPO'}: ${job.name}`
+    : 'Generation & Voting';
 
   return (
     <div className="space-y-4">
@@ -615,7 +649,9 @@ export default function FlowGRPOVotingPanel({ job, compact = false }: Props) {
                       onChange={event => updateDraft('sampler', event.target.value)}
                       className="w-full rounded-lg border border-gray-800 bg-gray-900 px-3 py-2 text-sm text-gray-100 outline-none focus:border-blue-500"
                     >
-                      <option value="flowmatch_step_with_logprob">FlowMatch Step With LogProb</option>
+                      {samplerOptions.map(option => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
                     </select>
                   </div>
                   <div>
@@ -625,7 +661,9 @@ export default function FlowGRPOVotingPanel({ job, compact = false }: Props) {
                       onChange={event => updateDraft('scheduler', event.target.value)}
                       className="w-full rounded-lg border border-gray-800 bg-gray-900 px-3 py-2 text-sm text-gray-100 outline-none focus:border-blue-500"
                     >
-                      <option value="flowmatch_step_with_logprob">FlowMatch Step With LogProb</option>
+                      {schedulerOptions.map(option => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
                     </select>
                   </div>
                 </div>
@@ -667,7 +705,7 @@ export default function FlowGRPOVotingPanel({ job, compact = false }: Props) {
                       : 'bg-blue-600 text-white hover:bg-blue-500',
                   )}
                 >
-                  Queue Flow-GRPO Task
+                  {pairwise ? 'Queue Diffusion-DPO Pair' : 'Queue Flow-GRPO Task'}
                 </Button>
               </div>
             </div>

@@ -2,6 +2,8 @@ import { NextResponse } from 'next/server';
 import { PrismaClient } from '@prisma/client';
 
 const prisma = new PrismaClient();
+const FLOW_GRPO_TRAINER_TYPE = 'flow_grpo_trainer';
+const DIFFUSION_DPO_TRAINER_TYPE = 'diffusion_dpo_trainer';
 
 const scalarVotes: Record<string, number> = {
   up: 1,
@@ -14,7 +16,7 @@ export async function POST(request: Request, { params }: { params: { jobID: stri
     const body = await request.json();
     const rewards = Array.isArray(body.rewards) ? body.rewards : null;
 
-    const task = await prisma.flowGRPOVoteTask.findFirst({
+    const task = await (prisma.flowGRPOVoteTask as any).findFirst({
       where: {
         id: params.taskID,
         job_id: params.jobID,
@@ -41,8 +43,12 @@ export async function POST(request: Request, { params }: { params: { jobID: stri
     if (task.candidates.length < 2) {
       return NextResponse.json({ error: 'Flow-GRPO live tasks must contain a generated rollout group' }, { status: 409 });
     }
+    const trainerType = task.trainer_type || FLOW_GRPO_TRAINER_TYPE;
+    if (trainerType === DIFFUSION_DPO_TRAINER_TYPE && task.candidates.length !== 2) {
+      return NextResponse.json({ error: 'Diffusion-DPO tasks must contain exactly two candidates' }, { status: 409 });
+    }
 
-    const candidateById = new Map(task.candidates.map(candidate => [candidate.id, candidate]));
+    const candidateById = new Map(task.candidates.map((candidate: any) => [candidate.id, candidate]));
     const providedIds = new Set<string>();
     const submittedVotes = rewards || [{
       candidate_id: body.candidate_id,
@@ -74,11 +80,12 @@ export async function POST(request: Request, { params }: { params: { jobID: stri
       return NextResponse.json({ error: 'A vote must be provided for every generated candidate' }, { status: 400 });
     }
     const votes = await prisma.$transaction(async tx => {
-      const createdVotes = await Promise.all(normalizedRewards.map(item => tx.flowGRPOVote.create({
+      const createdVotes = await Promise.all(normalizedRewards.map(item => (tx.flowGRPOVote as any).create({
         data: {
           job_id: params.jobID,
           vote_task_id: params.taskID,
           candidate_id: item.candidate_id,
+          trainer_type: trainerType,
           value: item.value,
           reward: item.reward,
         },

@@ -63,7 +63,7 @@ const pages: Page[] = [
     component: FlowGRPOVotingPanel,
     mainCss: 'pt-24',
     jobTypes: ['train'],
-    processTypes: ['flow_grpo_trainer'],
+    processTypes: ['flow_grpo_trainer', 'diffusion_dpo_trainer'],
   },
   {
     name: 'Config File',
@@ -108,7 +108,7 @@ export default function JobPage({ params }: { params: { jobID: string } }) {
   const processType = job ? getProcessType(job) : '';
 
   useEffect(() => {
-    if (processType === 'flow_grpo_trainer') {
+    if (processType === 'flow_grpo_trainer' || processType === 'diffusion_dpo_trainer') {
       setPageKey(current => (current === 'overview' ? 'voting' : current));
     }
   }, [processType]);
@@ -166,7 +166,7 @@ export default function JobPage({ params }: { params: { jobID: string } }) {
           if (page.processTypes && !page.processTypes.includes(processType)) {
             return null;
           }
-          if (page.value === 'samples' && processType === 'flow_grpo_trainer') {
+          if (page.value === 'samples' && (processType === 'flow_grpo_trainer' || processType === 'diffusion_dpo_trainer')) {
             return null;
           }
           return (

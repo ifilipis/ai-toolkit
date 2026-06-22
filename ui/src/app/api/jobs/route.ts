@@ -35,6 +35,22 @@ function normalizeFlowGRPOJobConfig(jobConfig: any) {
   return jobConfig;
 }
 
+function normalizeDiffusionDPOJobConfig(jobConfig: any) {
+  const process = jobConfig?.config?.process?.[0];
+  if (process?.type !== 'diffusion_dpo_trainer') {
+    return jobConfig;
+  }
+  process.dpo = process.dpo || {};
+  process.dpo.objective = process.dpo.objective || 'classic';
+  process.dpo.beta = Number.isFinite(Number(process.dpo.beta)) ? Number(process.dpo.beta) : 5000;
+  process.train = process.train || {};
+  process.sample = process.sample || {};
+  process.train.disable_sampling = true;
+  process.sample.sample_every = 0;
+  process.sample.samples = [];
+  return jobConfig;
+}
+
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const id = searchParams.get('id');
@@ -71,7 +87,7 @@ export async function POST(request: Request) {
   try {
     const body = await request.json();
     const { id, name } = body;
-    const job_config = normalizeFlowGRPOJobConfig(body.job_config);
+    const job_config = normalizeDiffusionDPOJobConfig(normalizeFlowGRPOJobConfig(body.job_config));
     let gpu_ids: string = body.gpu_ids;
 
     if (isMac()) {

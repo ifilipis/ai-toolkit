@@ -212,6 +212,10 @@ export interface SampleConfig {
   sample_steps: number;
   num_frames: number;
   fps: number;
+  ctrl_img?: string | null;
+  ctrl_img_1?: string | null;
+  ctrl_img_2?: string | null;
+  ctrl_img_3?: string | null;
 }
 
 export interface LoggingConfig {
@@ -236,6 +240,11 @@ export interface FlowGRPOConfig {
   sde_type: 'sde' | 'cps';
   timestep_fraction: number;
   group_size: number;
+}
+
+export interface DiffusionDPOConfig {
+  objective: 'classic' | 'linear';
+  beta: number;
 }
 
 export interface FlowGRPOLiveTaskConfig {
@@ -264,6 +273,7 @@ export interface ProcessConfig {
   network?: NetworkConfig;
   slider?: SliderConfig;
   grpo?: FlowGRPOConfig;
+  dpo?: DiffusionDPOConfig;
   save: SaveConfig;
   datasets?: DatasetConfig[];
   train: TrainConfig;
