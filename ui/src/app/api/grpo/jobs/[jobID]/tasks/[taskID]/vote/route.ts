@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { PrismaClient } from '@prisma/client';
 
 const prisma = new PrismaClient();
+const FLOW_GRPO_TRAINER_TYPE = 'flow_grpo_trainer';
 
 const scalarVotes: Record<string, number> = {
   up: 1,
@@ -14,7 +15,7 @@ export async function POST(request: Request, { params }: { params: { jobID: stri
     const body = await request.json();
     const rewards = Array.isArray(body.rewards) ? body.rewards : null;
 
-    const task = await prisma.flowGRPOVoteTask.findFirst({
+    const task = await (prisma.flowGRPOVoteTask as any).findFirst({
       where: {
         id: params.taskID,
         job_id: params.jobID,
@@ -38,11 +39,13 @@ export async function POST(request: Request, { params }: { params: { jobID: stri
     if (task.votes.length > 0) {
       return NextResponse.json({ error: 'Task already has a vote' }, { status: 409 });
     }
-    if (task.candidates.length < 2) {
-      return NextResponse.json({ error: 'Flow-GRPO live tasks must contain a generated rollout group' }, { status: 409 });
+    const trainerType = task.trainer_type || FLOW_GRPO_TRAINER_TYPE;
+    const isFlowGRPO = trainerType === FLOW_GRPO_TRAINER_TYPE;
+    if (task.candidates.length < (isFlowGRPO ? 2 : 1)) {
+      return NextResponse.json({ error: 'Live voting tasks must contain generated candidates' }, { status: 409 });
     }
 
-    const candidateById = new Map(task.candidates.map(candidate => [candidate.id, candidate]));
+    const candidateById = new Map(task.candidates.map((candidate: any) => [candidate.id, candidate]));
     const providedIds = new Set<string>();
     const submittedVotes = rewards || [{
       candidate_id: body.candidate_id,
@@ -70,15 +73,19 @@ export async function POST(request: Request, { params }: { params: { jobID: stri
         reward: rewardValue,
       });
     }
-    if (normalizedRewards.length !== task.candidates.length) {
+    if (normalizedRewards.length === 0) {
+      return NextResponse.json({ error: 'At least one candidate vote is required' }, { status: 400 });
+    }
+    if (isFlowGRPO && normalizedRewards.length !== task.candidates.length) {
       return NextResponse.json({ error: 'A vote must be provided for every generated candidate' }, { status: 400 });
     }
     const votes = await prisma.$transaction(async tx => {
-      const createdVotes = await Promise.all(normalizedRewards.map(item => tx.flowGRPOVote.create({
+      const createdVotes = await Promise.all(normalizedRewards.map(item => (tx.flowGRPOVote as any).create({
         data: {
           job_id: params.jobID,
           vote_task_id: params.taskID,
           candidate_id: item.candidate_id,
+          trainer_type: trainerType,
           value: item.value,
           reward: item.reward,
         },

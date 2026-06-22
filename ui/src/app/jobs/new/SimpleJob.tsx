@@ -47,6 +47,18 @@ type Props = {
 };
 
 const isDev = process.env.NODE_ENV === 'development';
+const aitkSamplerOptions: SelectOption[] = [
+  { value: 'flowmatch', label: 'FlowMatch' },
+  { value: 'ddpm', label: 'DDPM' },
+];
+const flowGRPOSamplerOptions: SelectOption[] = [
+  { value: 'flowmatch_step_with_logprob', label: 'FlowMatch Step With LogProb' },
+];
+
+const withCurrentOption = (options: SelectOption[], value?: string | null) => {
+  if (!value || options.some(option => option.value === value)) return options;
+  return [{ value, label: value }, ...options];
+};
 
 export default function SimpleJob({
   jobConfig,
@@ -82,7 +94,16 @@ export default function SimpleJob({
   const isVideoModel = !!(modelArch?.group === 'video');
   const isAudioModel = !!(modelArch?.group === 'audio');
   const isFlowGRPO = jobConfig.config.process[0].type === 'flow_grpo_trainer';
+  const isDiffusionKTO = jobConfig.config.process[0].type === 'diffusion_kto_trainer';
+  const isDiffusionKTODataset = isDiffusionKTO && !!jobConfig.config.process[0].kto?.dataset_enabled;
+  const isLiveVotingTrainer = isFlowGRPO || (isDiffusionKTO && !isDiffusionKTODataset);
   const datasets = jobConfig.config.process[0].datasets || [];
+  const liveVotingSamplerOptions = isFlowGRPO
+    ? flowGRPOSamplerOptions
+    : withCurrentOption(aitkSamplerOptions, jobConfig.config.process[0].sample.sampler);
+  const liveVotingSchedulerOptions = isFlowGRPO
+    ? flowGRPOSamplerOptions
+    : withCurrentOption(aitkSamplerOptions, jobConfig.config.process[0].train.noise_scheduler);
 
   const taggedSampleArr: Record<string, any>[] | null = useMemo(() => {
     if (!modelArch) return null;
@@ -132,11 +153,11 @@ export default function SimpleJob({
     if (!disableSections.includes('slider')) {
       count += 1; // add slider card
     }
-    if (isFlowGRPO) {
+    if (isFlowGRPO || isDiffusionKTO) {
       count += 1;
     }
     return count;
-  }, [modelArch, disableSections, isFlowGRPO]);
+  }, [modelArch, disableSections, isFlowGRPO, isDiffusionKTO]);
 
   let topBarClass = 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 xl:grid-cols-4 gap-6';
 
@@ -612,6 +633,83 @@ export default function SimpleJob({
               </div>
             </Card>
           )}
+          {isDiffusionKTO && (
+            <Card title="Diffusion-KTO">
+              <div className="grid gap-x-4 gap-y-2 md:grid-cols-2">
+                <NumberInput
+                  label="Beta"
+                  value={jobConfig.config.process[0].kto?.beta ?? 1000}
+                  onChange={value => setJobConfig(value, 'config.process[0].kto.beta')}
+                  min={0}
+                  required
+                />
+                <NumberInput
+                  label="Group Size"
+                  value={jobConfig.config.process[0].kto?.group_size ?? 4}
+                  onChange={value => setJobConfig(value, 'config.process[0].kto.group_size')}
+                  min={1}
+                  required
+                />
+                <NumberInput
+                  label="Desirable Weight"
+                  value={jobConfig.config.process[0].kto?.lambda_d ?? 1}
+                  onChange={value => setJobConfig(value, 'config.process[0].kto.lambda_d')}
+                  min={0}
+                  required
+                />
+                <NumberInput
+                  label="Undesirable Weight"
+                  value={jobConfig.config.process[0].kto?.lambda_u ?? 1}
+                  onChange={value => setJobConfig(value, 'config.process[0].kto.lambda_u')}
+                  min={0}
+                  required
+                />
+                <SelectInput
+                  label="BCE Offset"
+                  value={jobConfig.config.process[0].kto?.bce_offset || 'none'}
+                  onChange={value => setJobConfig(value, 'config.process[0].kto.bce_offset')}
+                  options={[
+                    { value: 'none', label: 'None' },
+                    { value: 'sigmoid', label: 'Sigmoid' },
+                    { value: 'original', label: 'Original' },
+                  ]}
+                />
+                <div>
+                  <FormGroup label="Dataset">
+                    <Checkbox
+                      label="Use Dataset"
+                      checked={!!jobConfig.config.process[0].kto?.dataset_enabled}
+                      onChange={value => {
+                        setJobConfig(value, 'config.process[0].kto.dataset_enabled');
+                        if (value && datasets.length === 0) {
+                          const newDataset = objectCopy(defaultDatasetConfig);
+                          newDataset.folder_path = datasetOptions[0]?.value || newDataset.folder_path;
+                          setJobConfig([newDataset], 'config.process[0].datasets');
+                        }
+                      }}
+                    />
+                  </FormGroup>
+                  {jobConfig.config.process[0].kto?.dataset_enabled && (
+                    <SelectInput
+                      label="Target Dataset"
+                      className="pt-2"
+                      value={datasets[0]?.folder_path || ''}
+                      onChange={value => {
+                        if (datasets.length === 0) {
+                          const newDataset = objectCopy(defaultDatasetConfig);
+                          newDataset.folder_path = value;
+                          setJobConfig([newDataset], 'config.process[0].datasets');
+                        } else {
+                          setJobConfig(value, 'config.process[0].datasets[0].folder_path');
+                        }
+                      }}
+                      options={withCurrentOption(datasetOptions, datasets[0]?.folder_path)}
+                    />
+                  )}
+                </div>
+              </div>
+            </Card>
+          )}
           <Card title="Save">
             <SelectInput
               label="Data Type"
@@ -641,6 +739,107 @@ export default function SimpleJob({
             />
           </Card>
         </div>
+        {isLiveVotingTrainer && (
+          <div>
+            <Card title="Sampling">
+              <div className={sampleTopStyleClass}>
+                <div>
+                  <SelectInput
+                    label="Sampler"
+                    value={jobConfig.config.process[0].sample.sampler}
+                    onChange={value => setJobConfig(value, 'config.process[0].sample.sampler')}
+                    options={liveVotingSamplerOptions}
+                  />
+                  <SelectInput
+                    label="Scheduler"
+                    className="pt-2"
+                    value={jobConfig.config.process[0].train.noise_scheduler}
+                    onChange={value => setJobConfig(value, 'config.process[0].train.noise_scheduler')}
+                    options={liveVotingSchedulerOptions}
+                  />
+                </div>
+                <div>
+                  <NumberInput
+                    label="Guidance Scale"
+                    value={jobConfig.config.process[0].sample.guidance_scale}
+                    onChange={value => setJobConfig(value, 'config.process[0].sample.guidance_scale')}
+                    placeholder="eg. 1.0"
+                    min={0}
+                    required
+                  />
+                  <NumberInput
+                    label="Sample Steps"
+                    value={jobConfig.config.process[0].sample.sample_steps}
+                    onChange={value => setJobConfig(value, 'config.process[0].sample.sample_steps')}
+                    placeholder="eg. 1"
+                    className="pt-2"
+                    min={1}
+                    required
+                  />
+                </div>
+                {!isAudioModel && (
+                  <div>
+                    <NumberInput
+                      label="Width"
+                      value={jobConfig.config.process[0].sample.width}
+                      onChange={value => setJobConfig(value, 'config.process[0].sample.width')}
+                      placeholder="eg. 1024"
+                      min={0}
+                      required
+                    />
+                    <NumberInput
+                      label="Height"
+                      value={jobConfig.config.process[0].sample.height}
+                      onChange={value => setJobConfig(value, 'config.process[0].sample.height')}
+                      placeholder="eg. 1024"
+                      className="pt-2"
+                      min={0}
+                      required
+                    />
+                    {isVideoModel && (
+                      <div>
+                        <NumberInput
+                          label="Num Frames"
+                          value={jobConfig.config.process[0].sample.num_frames}
+                          onChange={value => setJobConfig(value, 'config.process[0].sample.num_frames')}
+                          placeholder="eg. 0"
+                          className="pt-2"
+                          min={0}
+                          required
+                        />
+                        <NumberInput
+                          label="FPS"
+                          value={jobConfig.config.process[0].sample.fps}
+                          onChange={value => setJobConfig(value, 'config.process[0].sample.fps')}
+                          placeholder="eg. 0"
+                          className="pt-2"
+                          min={0}
+                          required
+                        />
+                      </div>
+                    )}
+                  </div>
+                )}
+                <div>
+                  <NumberInput
+                    label="Seed"
+                    value={jobConfig.config.process[0].sample.seed}
+                    onChange={value => setJobConfig(value, 'config.process[0].sample.seed')}
+                    placeholder="eg. 0"
+                    min={0}
+                    required
+                  />
+                  <Checkbox
+                    label="Walk Seed"
+                    className="pt-4 pl-2"
+                    checked={jobConfig.config.process[0].sample.walk_seed}
+                    onChange={value => setJobConfig(value, 'config.process[0].sample.walk_seed')}
+                  />
+                </div>
+              </div>
+            </Card>
+          </div>
+        )}
         <div>
           <Card title="Training">
             <div className={trainingBarClass}>
@@ -1066,6 +1265,7 @@ export default function SimpleJob({
                           { value: 'txt', label: 'txt' },
                           { value: 'json', label: 'json' },
                           { value: 'caption', label: 'caption' },
+                          { value: 'comfyui', label: 'comfyui' },
                         ]}
                       />
 
@@ -1226,19 +1426,21 @@ export default function SimpleJob({
             </Card>
           </div>
         )}
-        {!isFlowGRPO && (
+        {!isLiveVotingTrainer && (
           <div>
             <Card title="Sample">
             <div className={sampleTopStyleClass}>
               <div>
-                <NumberInput
-                  label="Sample Every"
-                  value={jobConfig.config.process[0].sample.sample_every}
-                  onChange={value => setJobConfig(value, 'config.process[0].sample.sample_every')}
-                  placeholder="eg. 250"
-                  min={1}
-                  required
-                />
+                {!isDiffusionKTO && (
+                  <NumberInput
+                    label="Sample Every"
+                    value={jobConfig.config.process[0].sample.sample_every}
+                    onChange={value => setJobConfig(value, 'config.process[0].sample.sample_every')}
+                    placeholder="eg. 250"
+                    min={1}
+                    required
+                  />
+                )}
                 <SelectInput
                   label="Sampler"
                   className="pt-2"

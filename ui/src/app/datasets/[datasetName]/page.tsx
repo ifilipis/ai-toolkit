@@ -132,6 +132,7 @@ export default function DatasetPage({ params }: { params: { datasetName: string 
                 { value: 'txt', label: 'txt' },
                 { value: 'json', label: 'json' },
                 { value: 'caption', label: 'caption' },
+                { value: 'comfyui', label: 'comfyui' },
               ]}
             />
           </div>

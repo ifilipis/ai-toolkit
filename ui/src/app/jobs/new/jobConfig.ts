@@ -1,7 +1,7 @@
 'use client';
 import { isMac } from '@/helpers/basic';
 import { defaultSampleConfig } from '@/helpers/defaultSamples';
-import { JobConfig, SampleConfig, DatasetConfig, SliderConfig, FlowGRPOConfig } from '@/types';
+import { JobConfig, SampleConfig, DatasetConfig, SliderConfig, FlowGRPOConfig, DiffusionKTOConfig } from '@/types';
 
 export const defaultDatasetConfig: DatasetConfig = {
   folder_path: '/path/to/images/folder',
@@ -43,6 +43,16 @@ export const defaultFlowGRPOConfig: FlowGRPOConfig = {
   sde_type: 'sde',
   timestep_fraction: 1.0,
   group_size: 4,
+};
+
+export const defaultDiffusionKTOConfig: DiffusionKTOConfig = {
+  beta: 1000,
+  lambda_d: 1,
+  lambda_u: 1,
+  halo: 'sigmoid',
+  bce_offset: 'none',
+  group_size: 4,
+  dataset_enabled: false,
 };
 
 export const defaultJobConfig: JobConfig = {

@@ -38,7 +38,95 @@ from toolkit.train_tools import get_torch_dtype
 if TYPE_CHECKING:
     from toolkit.data_loader import AiToolkitDataset
     from toolkit.data_transfer_object.data_loader import FileItemDTO
-    from toolkit.stable_diffusion_model import StableDiffusion
+
+
+def _extract_comfyui_text_from_metadata(value):
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return ""
+        try:
+            return _extract_comfyui_text_from_metadata(json.loads(stripped))
+        except Exception:
+            return stripped
+    if isinstance(value, dict):
+        inputs = value.get("inputs")
+        if isinstance(inputs, dict):
+            text = inputs.get("text")
+            if isinstance(text, str) and text.strip():
+                return text.strip()
+        for key in ("caption", "description", "text", "prompt", "positive"):
+            text = value.get(key)
+            if isinstance(text, str) and text.strip():
+                return text.strip()
+        for nested in value.values():
+            text = _extract_comfyui_text_from_metadata(nested)
+            if text:
+                return text
+    if isinstance(value, list):
+        for nested in value:
+            text = _extract_comfyui_text_from_metadata(nested)
+            if text:
+                return text
+    return ""
+
+
+def _extract_comfyui_prompt_text(value):
+    if isinstance(value, str):
+        try:
+            value = json.loads(value.strip())
+        except Exception:
+            return value.strip()
+    if not isinstance(value, dict):
+        return ""
+
+    positive_candidates = []
+    user_prompt_candidates = []
+    for node in value.values():
+        if not isinstance(node, dict):
+            continue
+        inputs = node.get("inputs")
+        if not isinstance(inputs, dict):
+            continue
+        class_type = str(node.get("class_type", "")).lower()
+        title = str((node.get("_meta") or {}).get("title", "")).lower()
+        if "negative" in title:
+            continue
+        if class_type == "cliptextencode" or "positive prompt" in title:
+            text = inputs.get("text")
+            if isinstance(text, str) and text.strip():
+                positive_candidates.append(text.strip())
+        if "user prompt" in title:
+            text = inputs.get("value") or inputs.get("text")
+            if isinstance(text, str) and text.strip():
+                user_prompt_candidates.append(text.strip())
+
+    if positive_candidates:
+        return positive_candidates[0]
+    if user_prompt_candidates:
+        return user_prompt_candidates[0]
+    return ""
+
+
+def get_comfyui_caption_from_png_metadata(image_path: str) -> str:
+    try:
+        with Image.open(image_path) as image:
+            metadata = dict(getattr(image, "info", {}) or {})
+    except Exception:
+        return ""
+
+    for key in ("prompt", "workflow"):
+        text = _extract_comfyui_prompt_text(metadata.get(key))
+        if text:
+            return clean_caption(text)
+
+    for key in ("caption", "Caption", "description", "Description", "parameters", "Parameters"):
+        text = _extract_comfyui_text_from_metadata(metadata.get(key))
+        if text:
+            return clean_caption(text)
+    return ""
 
 accelerator = get_accelerator()
 
@@ -142,6 +230,15 @@ class CaptionMixin:
             # see if prompt file exists
             path_no_ext = os.path.splitext(img_path)[0]
             prompt_path = path_no_ext + ext
+
+        if ext in {".comfyui", "comfyui"}:
+            prompt = get_comfyui_caption_from_png_metadata(img_path)
+            if not prompt:
+                if hasattr(self, 'default_prompt'):
+                    prompt = self.default_prompt
+                if hasattr(self, 'default_caption'):
+                    prompt = self.default_caption
+            return prompt
                 
         # allow folders to have a default prompt
         default_prompt_path = os.path.join(os.path.dirname(img_path), 'default.txt')
@@ -334,7 +431,12 @@ class CaptionProcessingDTOMixin:
             prompt_path = path_no_ext + prompt_ext
             short_caption = None
 
-            if os.path.exists(prompt_path):
+            if prompt_ext in {".comfyui", "comfyui"}:
+                prompt = get_comfyui_caption_from_png_metadata(self.path)
+                short_caption = None
+                if prompt.strip() == '' and self.dataset_config.default_caption is not None:
+                    prompt = self.dataset_config.default_caption
+            elif os.path.exists(prompt_path):
                 with open(prompt_path, 'r', encoding='utf-8') as f:
                     prompt = f.read()
                     short_caption = None

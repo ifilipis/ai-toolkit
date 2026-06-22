@@ -1,5 +1,5 @@
 import { GroupedSelectOption, SelectOption, JobConfig } from '@/types';
-import { defaultFlowGRPOConfig, defaultSliderConfig, defaultDatasetConfig } from './jobConfig';
+import { defaultDiffusionKTOConfig, defaultFlowGRPOConfig, defaultSliderConfig, defaultDatasetConfig } from './jobConfig';
 import { defaultAudioSampleConfig, defaultSampleConfig, defaultIdeogramSamplesConfig } from '@/helpers/defaultSamples';
 
 type Control = 'depth' | 'line' | 'pose' | 'inpaint';
@@ -1174,6 +1174,35 @@ export const jobTypeOptions: JobTypeOption[] = [
       if (!config.config.process[0].datasets || config.config.process[0].datasets.length === 0) {
         config.config.process[0].datasets = [{ ...defaultDatasetConfig }];
       }
+      config.config.process[0].train.disable_sampling = false;
+      if (!config.config.process[0].sample.sample_every) {
+        config.config.process[0].sample.sample_every = 250;
+      }
+      if (config.config.process[0].sample.samples.length === 0) {
+        config.config.process[0].sample.samples = [{ prompt: '' }];
+      }
+      return config;
+    },
+  },
+  {
+    value: 'diffusion_kto_trainer',
+    label: 'Diffusion-KTO',
+    disableSections: ['slider', 'datasets'],
+    onActivate: (config: JobConfig) => {
+      config.config.process[0].kto = { ...defaultDiffusionKTOConfig };
+      if (!config.config.process[0].datasets || config.config.process[0].datasets.length === 0) {
+        config.config.process[0].datasets = [{ ...defaultDatasetConfig }];
+      }
+      config.config.process[0].train.disable_sampling = true;
+      config.config.process[0].train.optimizer = 'adamw';
+      config.config.process[0].train.batch_size = 1;
+      config.config.process[0].train.gradient_accumulation = 1;
+      config.config.process[0].sample.sample_every = 0;
+      config.config.process[0].sample.samples = [];
+      return config;
+    },
+    onDeactivate: (config: JobConfig) => {
+      delete config.config.process[0].kto;
       config.config.process[0].train.disable_sampling = false;
       if (!config.config.process[0].sample.sample_every) {
         config.config.process[0].sample.sample_every = 250;

@@ -35,6 +35,32 @@ function normalizeFlowGRPOJobConfig(jobConfig: any) {
   return jobConfig;
 }
 
+function normalizeDiffusionKTOJobConfig(jobConfig: any) {
+  const process = jobConfig?.config?.process?.[0];
+  if (process?.type !== 'diffusion_kto_trainer') {
+    return jobConfig;
+  }
+  process.kto = process.kto || {};
+  process.kto.beta = Number.isFinite(Number(process.kto.beta)) ? Number(process.kto.beta) : 1000;
+  process.kto.lambda_d = Number.isFinite(Number(process.kto.lambda_d)) ? Number(process.kto.lambda_d) : 1;
+  process.kto.lambda_u = Number.isFinite(Number(process.kto.lambda_u)) ? Number(process.kto.lambda_u) : 1;
+  process.kto.halo = process.kto.halo || 'sigmoid';
+  process.kto.bce_offset = ['none', 'sigmoid', 'original'].includes(process.kto.bce_offset)
+    ? process.kto.bce_offset
+    : 'none';
+  process.kto.group_size = Number.isFinite(Number(process.kto.group_size)) ? Math.max(1, Number(process.kto.group_size)) : 4;
+  process.kto.dataset_enabled = !!process.kto.dataset_enabled;
+  process.train = process.train || {};
+  process.sample = process.sample || {};
+  if (process.kto.dataset_enabled && !process.datasets?.[0]?.folder_path) {
+    throw new Error('Diffusion-KTO dataset mode requires config.process[0].datasets[0].folder_path');
+  }
+  process.train.disable_sampling = true;
+  process.sample.sample_every = 0;
+  process.sample.samples = [];
+  return jobConfig;
+}
+
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const id = searchParams.get('id');
@@ -71,7 +97,7 @@ export async function POST(request: Request) {
   try {
     const body = await request.json();
     const { id, name } = body;
-    const job_config = normalizeFlowGRPOJobConfig(body.job_config);
+    const job_config = normalizeDiffusionKTOJobConfig(normalizeFlowGRPOJobConfig(body.job_config));
     let gpu_ids: string = body.gpu_ids;
 
     if (isMac()) {

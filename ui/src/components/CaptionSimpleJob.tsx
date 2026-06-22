@@ -132,6 +132,7 @@ const CaptionSimpleJob: React.FC<Props> = ({ jobConfig, setJobConfig, gpuIDs, se
                 { value: 'txt', label: 'txt' },
                 { value: 'json', label: 'json' },
                 { value: 'caption', label: 'caption' },
+                { value: 'comfyui', label: 'comfyui' },
               ]}
             />
           </div>

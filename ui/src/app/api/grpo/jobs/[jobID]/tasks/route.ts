@@ -3,6 +3,7 @@ import { PrismaClient } from '@prisma/client';
 import { getVotingInputImageMode } from '@/utils/modelCapabilities';
 
 const prisma = new PrismaClient();
+const FLOW_GRPO_TRAINER_TYPE = 'flow_grpo_trainer';
 
 const parseIntegerField = (value: unknown, fallback: number, min: number) => {
   const raw = `${value ?? ''}`.trim();
@@ -27,9 +28,18 @@ export async function GET(request: Request, { params }: { params: { jobID: strin
     .filter(Boolean);
 
   try {
-    const tasks = await prisma.flowGRPOVoteTask.findMany({
+    const job = await prisma.job.findUnique({
+      where: { id: params.jobID },
+    });
+    if (!job) {
+      return NextResponse.json({ error: 'Job not found' }, { status: 404 });
+    }
+    const jobConfig = JSON.parse(job.job_config);
+    const trainerType = `${jobConfig?.config?.process?.[0]?.type || FLOW_GRPO_TRAINER_TYPE}`;
+    const tasks = await (prisma.flowGRPOVoteTask as any).findMany({
       where: {
         job_id: params.jobID,
+        trainer_type: trainerType,
         ...(statuses.length === 1 ? { status: statuses[0] } : { status: { in: statuses } }),
       },
       include: {
@@ -50,9 +60,9 @@ export async function GET(request: Request, { params }: { params: { jobID: strin
     });
 
     return NextResponse.json({
-      tasks: tasks.map(task => ({
+      tasks: (tasks as any[]).map(task => ({
         ...task,
-        candidates: task.candidates.map(candidate => ({
+        candidates: task.candidates.map((candidate: any) => ({
           ...candidate,
           image_url: `/api/img/${encodeURIComponent(candidate.image_path)}`,
         })),
@@ -73,31 +83,14 @@ export async function POST(request: Request, { params }: { params: { jobID: stri
     const height = parseIntegerField(body.height, 1024, 64);
     const guidanceScale = parseFloatField(body.guidance_scale, 4, 0);
     const numInferenceSteps = parseIntegerField(body.num_inference_steps, 30, 1);
-    const sampler = `${body.sampler || 'flowmatch_step_with_logprob'}`.trim() || 'flowmatch_step_with_logprob';
-    const scheduler =
-      `${body.scheduler || 'flowmatch_step_with_logprob'}`.trim() || 'flowmatch_step_with_logprob';
+    const rawSampler = `${body.sampler ?? ''}`.trim();
+    const rawScheduler = `${body.scheduler ?? ''}`.trim();
     const seedValue = `${body.seed ?? ''}`.trim();
     const seed = seedValue === '' ? null : parseInt(seedValue, 10);
     const ctrlImgValue = `${body.ctrl_img ?? ''}`.trim();
     const ctrlImg1Value = `${body.ctrl_img_1 ?? ''}`.trim();
     const ctrlImg2Value = `${body.ctrl_img_2 ?? ''}`.trim();
     const ctrlImg3Value = `${body.ctrl_img_3 ?? ''}`.trim();
-
-    if (!prompt) {
-      return NextResponse.json({ error: 'Prompt is required' }, { status: 400 });
-    }
-    if (sampler !== 'flowmatch_step_with_logprob') {
-      return NextResponse.json(
-        { error: `Unsupported Flow-GRPO sampler '${sampler}'. Supported values: flowmatch_step_with_logprob` },
-        { status: 400 },
-      );
-    }
-    if (scheduler !== 'flowmatch_step_with_logprob') {
-      return NextResponse.json(
-        { error: `Unsupported Flow-GRPO scheduler '${scheduler}'. Supported values: flowmatch_step_with_logprob` },
-        { status: 400 },
-      );
-    }
 
     const job = await prisma.job.findUnique({
       where: { id: params.jobID },
@@ -106,6 +99,33 @@ export async function POST(request: Request, { params }: { params: { jobID: stri
       return NextResponse.json({ error: 'Job not found' }, { status: 404 });
     }
     const jobConfig = JSON.parse(job.job_config);
+    const trainerType = `${jobConfig?.config?.process?.[0]?.type || FLOW_GRPO_TRAINER_TYPE}`;
+    const requiresRolloutScheduler = trainerType === FLOW_GRPO_TRAINER_TYPE;
+    const sampler =
+      rawSampler ||
+      (requiresRolloutScheduler
+        ? 'flowmatch_step_with_logprob'
+        : `${jobConfig?.config?.process?.[0]?.sample?.sampler || 'flowmatch'}`);
+    const scheduler =
+      rawScheduler ||
+      (requiresRolloutScheduler
+        ? 'flowmatch_step_with_logprob'
+        : `${jobConfig?.config?.process?.[0]?.train?.noise_scheduler || ''}`);
+    if (!prompt) {
+      return NextResponse.json({ error: 'Prompt is required' }, { status: 400 });
+    }
+    if (requiresRolloutScheduler && sampler !== 'flowmatch_step_with_logprob') {
+      return NextResponse.json(
+        { error: `Unsupported live-voting sampler '${sampler}'. Supported values: flowmatch_step_with_logprob` },
+        { status: 400 },
+      );
+    }
+    if (requiresRolloutScheduler && scheduler !== 'flowmatch_step_with_logprob') {
+      return NextResponse.json(
+        { error: `Unsupported live-voting scheduler '${scheduler}'. Supported values: flowmatch_step_with_logprob` },
+        { status: 400 },
+      );
+    }
     const modelArch = `${jobConfig?.config?.process?.[0]?.model?.arch || ''}`;
     const inputImageMode = getVotingInputImageMode(modelArch);
     let promptWithInputImage = prompt;
@@ -125,9 +145,10 @@ export async function POST(request: Request, { params }: { params: { jobID: stri
       }
     }
 
-    const task = await prisma.flowGRPOVoteTask.create({
+    const task = await (prisma.flowGRPOVoteTask as any).create({
       data: {
         job_id: params.jobID,
+        trainer_type: trainerType,
         prompt: promptWithInputImage,
         negative_prompt: negativePrompt,
         width,

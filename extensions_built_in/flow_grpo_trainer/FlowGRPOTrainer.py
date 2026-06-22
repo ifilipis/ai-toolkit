@@ -35,6 +35,7 @@ from toolkit.samplers.custom_flowmatch_sampler import FlowMatchStepWithLogProbSc
 FLOW_GRPO_NATIVE_SCHEDULER = "flowmatch_step_with_logprob"
 SUPPORTED_FLOW_GRPO_SAMPLERS = {FLOW_GRPO_NATIVE_SCHEDULER}
 SUPPORTED_FLOW_GRPO_SCHEDULERS = {FLOW_GRPO_NATIVE_SCHEDULER}
+FLOW_GRPO_TRAINER_TYPE = "flow_grpo_trainer"
 
 
 @dataclass
@@ -194,6 +195,7 @@ class FlowGRPOTrainer(DiffusionTrainer):
         self._candidate_root = self._flow_grpo_root / "candidates"
         self._candidate_root.mkdir(parents=True, exist_ok=True)
         self._validate_flow_grpo_runtime_config()
+        self._ensure_voting_schema()
 
     def _normalize_control_value(self, value: Optional[str], default: str) -> str:
         normalized = (value or default).strip().lower()
@@ -357,15 +359,24 @@ class FlowGRPOTrainer(DiffusionTrainer):
 
         self._retry_db_operation(_op)
 
+    def _ensure_voting_schema(self) -> None:
+        for table in ("FlowGRPOVoteTask", "FlowGRPOCandidate", "FlowGRPOVote"):
+            columns = self._db_execute(f"PRAGMA table_info({table})")
+            column_names = {row["name"] for row in columns}
+            if "trainer_type" not in column_names:
+                self._db_execute_write(
+                    f"ALTER TABLE {table} ADD COLUMN trainer_type TEXT NOT NULL DEFAULT '{FLOW_GRPO_TRAINER_TYPE}'"
+                )
+
     def _recover_stale_generating_tasks(self) -> None:
         rows = self._db_execute(
             """
             SELECT task.id
             FROM FlowGRPOVoteTask task
-            WHERE task.job_id = ? AND task.status = 'generating'
+            WHERE task.job_id = ? AND task.trainer_type = ? AND task.status = 'generating'
             ORDER BY task.created_at ASC
             """,
-            (self.job_id,),
+            (self.job_id, FLOW_GRPO_TRAINER_TYPE),
         )
         for row in rows:
             task_id = row["id"]
@@ -380,8 +391,8 @@ class FlowGRPOTrainer(DiffusionTrainer):
 
     def _count_open_tasks(self) -> int:
         rows = self._db_execute(
-            "SELECT COUNT(*) AS count FROM FlowGRPOVoteTask WHERE job_id = ? AND status = 'open'",
-            (self.job_id,),
+            "SELECT COUNT(*) AS count FROM FlowGRPOVoteTask WHERE job_id = ? AND trainer_type = ? AND status = 'open'",
+            (self.job_id, FLOW_GRPO_TRAINER_TYPE),
         )
         return int(rows[0]["count"]) if rows else 0
 
@@ -390,9 +401,9 @@ class FlowGRPOTrainer(DiffusionTrainer):
             """
             SELECT COUNT(*) AS count
             FROM FlowGRPOVoteTask
-            WHERE job_id = ? AND status IN ('generating', 'open')
+            WHERE job_id = ? AND trainer_type = ? AND status IN ('generating', 'open')
             """,
-            (self.job_id,),
+            (self.job_id, FLOW_GRPO_TRAINER_TYPE),
         )
         return int(rows[0]["count"]) if rows else 0
 
@@ -1308,11 +1319,11 @@ class FlowGRPOTrainer(DiffusionTrainer):
             """
             SELECT *
             FROM FlowGRPOVoteTask
-            WHERE job_id = ? AND status = 'requested'
+            WHERE job_id = ? AND trainer_type = ? AND status = 'requested'
             ORDER BY created_at ASC
             LIMIT 1
             """,
-            (self.job_id,),
+            (self.job_id, FLOW_GRPO_TRAINER_TYPE),
         )
         return rows[0] if rows else None
 
@@ -1433,6 +1444,7 @@ class FlowGRPOTrainer(DiffusionTrainer):
                             state.candidate_id,
                             self.job_id,
                             task_id,
+                            FLOW_GRPO_TRAINER_TYPE,
                             order_index,
                             state.prompt,
                             state.negative_prompt,
@@ -1449,10 +1461,10 @@ class FlowGRPOTrainer(DiffusionTrainer):
                     self._db_execute_many(
                         """
                         INSERT INTO FlowGRPOCandidate (
-                            id, job_id, vote_task_id, order_index, prompt, negative_prompt, seed,
+                            id, job_id, vote_task_id, trainer_type, order_index, prompt, negative_prompt, seed,
                             guidance_scale, num_inference_steps, sampler, scheduler, image_path, state_path, status,
                             created_at, updated_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                         """,
                         [candidate_row],
                     )
@@ -1494,6 +1506,7 @@ class FlowGRPOTrainer(DiffusionTrainer):
             SELECT task.*
             FROM FlowGRPOVoteTask task
             WHERE task.job_id = ?
+              AND task.trainer_type = ?
               AND task.status = 'voted'
               AND (
                 SELECT COUNT(*)
@@ -1515,7 +1528,7 @@ class FlowGRPOTrainer(DiffusionTrainer):
             ORDER BY task.created_at ASC
             LIMIT ?
             """,
-            (self.job_id, 1),
+            (self.job_id, FLOW_GRPO_TRAINER_TYPE, 1),
         )
         if not rows:
             return None
@@ -1523,8 +1536,8 @@ class FlowGRPOTrainer(DiffusionTrainer):
 
     def _load_task_rows(self, task_id: str) -> tuple[sqlite3.Row, list[sqlite3.Row], list[sqlite3.Row]]:
         task_rows = self._db_execute(
-            "SELECT * FROM FlowGRPOVoteTask WHERE id = ? AND job_id = ? LIMIT 1",
-            (task_id, self.job_id),
+            "SELECT * FROM FlowGRPOVoteTask WHERE id = ? AND job_id = ? AND trainer_type = ? LIMIT 1",
+            (task_id, self.job_id, FLOW_GRPO_TRAINER_TYPE),
         )
         if not task_rows:
             raise ValueError(f"Flow-GRPO vote task '{task_id}' was not found.")

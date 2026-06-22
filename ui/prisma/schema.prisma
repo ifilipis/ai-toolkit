@@ -54,6 +54,7 @@ model Job {
 model FlowGRPOVoteTask {
   id              String   @id @default(uuid())
   job_id          String
+  trainer_type    String   @default("flow_grpo_trainer")
   prompt          String
   negative_prompt String   @default("")
   width           Int?
@@ -72,13 +73,14 @@ model FlowGRPOVoteTask {
   candidates FlowGRPOCandidate[]
   votes      FlowGRPOVote[]
 
-  @@index([job_id, status, created_at])
+  @@index([job_id, trainer_type, status, created_at])
 }
 
 model FlowGRPOCandidate {
   id                  String   @id @default(uuid())
   job_id              String
   vote_task_id        String
+  trainer_type        String   @default("flow_grpo_trainer")
   order_index         Int
   prompt              String
   negative_prompt     String   @default("")
@@ -88,7 +90,7 @@ model FlowGRPOCandidate {
   sampler             String
   scheduler           String
   image_path          String
-  state_path          String
+  state_path          String   @default("")
   status              String   @default("open")
   created_at          DateTime @default(now())
   updated_at          DateTime @updatedAt
@@ -97,7 +99,7 @@ model FlowGRPOCandidate {
   vote_task FlowGRPOVoteTask @relation(fields: [vote_task_id], references: [id], onDelete: Cascade)
   votes     FlowGRPOVote[]
 
-  @@index([job_id, vote_task_id, order_index])
+  @@index([job_id, trainer_type, vote_task_id, order_index])
 }
 
 model FlowGRPOVote {
@@ -105,6 +107,7 @@ model FlowGRPOVote {
   job_id       String
   vote_task_id String
   candidate_id String?
+  trainer_type String   @default("flow_grpo_trainer")
   value        String
   reward       Float
   processed    Boolean  @default(false)
@@ -115,6 +118,6 @@ model FlowGRPOVote {
   vote_task FlowGRPOVoteTask @relation(fields: [vote_task_id], references: [id], onDelete: Cascade)
   candidate FlowGRPOCandidate? @relation(fields: [candidate_id], references: [id], onDelete: Cascade)
 
-  @@index([job_id, processed, created_at])
-  @@index([vote_task_id, processed])
+  @@index([job_id, trainer_type, processed, created_at])
+  @@index([vote_task_id, trainer_type, processed])
 }

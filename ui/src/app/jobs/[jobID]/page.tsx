@@ -16,7 +16,7 @@ import JobPlugin from '@/components/JobPlugin';
 import FlowGRPOVotingPanel from '@/components/FlowGRPOVotingPanel';
 import { Job } from '@prisma/client';
 import { apiClient } from '@/utils/api';
-import { getProcessType } from '@/utils/jobs';
+import { getJobConfig, getProcessType } from '@/utils/jobs';
 
 type PageKey = 'overview' | 'samples' | 'config' | 'loss_log' | 'plugin' | 'voting';
 
@@ -63,7 +63,7 @@ const pages: Page[] = [
     component: FlowGRPOVotingPanel,
     mainCss: 'pt-24',
     jobTypes: ['train'],
-    processTypes: ['flow_grpo_trainer'],
+    processTypes: ['flow_grpo_trainer', 'diffusion_kto_trainer'],
   },
   {
     name: 'Config File',
@@ -106,12 +106,19 @@ export default function JobPage({ params }: { params: { jobID: string } }) {
 
   const jobType = job?.job_type || 'unknown';
   const processType = job ? getProcessType(job) : '';
+  const isOfflineDiffusionKTO = !!(
+    job &&
+    processType === 'diffusion_kto_trainer' &&
+    getJobConfig(job).config.process[0]?.kto?.dataset_enabled
+  );
 
   useEffect(() => {
-    if (processType === 'flow_grpo_trainer') {
+    if (processType === 'flow_grpo_trainer' || (processType === 'diffusion_kto_trainer' && !isOfflineDiffusionKTO)) {
       setPageKey(current => (current === 'overview' ? 'voting' : current));
+    } else if (isOfflineDiffusionKTO) {
+      setPageKey(current => (current === 'voting' ? 'overview' : current));
     }
-  }, [processType]);
+  }, [processType, isOfflineDiffusionKTO]);
 
   let title = `Job: ${job?.name || 'Loading...'}`;
   if (jobType === 'caption') {
@@ -166,7 +173,10 @@ export default function JobPage({ params }: { params: { jobID: string } }) {
           if (page.processTypes && !page.processTypes.includes(processType)) {
             return null;
           }
-          if (page.value === 'samples' && processType === 'flow_grpo_trainer') {
+          if (page.value === 'voting' && isOfflineDiffusionKTO) {
+            return null;
+          }
+          if (page.value === 'samples' && (processType === 'flow_grpo_trainer' || processType === 'diffusion_kto_trainer')) {
             return null;
           }
           return (
