@@ -18,6 +18,7 @@ import numpy as np
 import torch
 from diffusers import ControlNetModel, T2IAdapter
 from PIL import Image
+from safetensors.torch import load_file
 from tqdm import tqdm
 from torchvision.transforms import functional as TF
 from torchvision.transforms import transforms
@@ -25,10 +26,12 @@ from torchvision.transforms import transforms
 from extensions_built_in.sd_trainer.DiffusionTrainer import DiffusionTrainer
 from toolkit.accelerator import unwrap_model
 from toolkit.clip_vision_adapter import ClipVisionAdapter
-from toolkit.config_modules import GenerateImageConfig
+from toolkit.config_modules import GenerateImageConfig, NetworkConfig
 from toolkit.custom_adapter import CustomAdapter
 from toolkit.ip_adapter import IPAdapter
+from toolkit.lora_special import LoRASpecialNetwork
 from toolkit.prompt_utils import PromptEmbeds, concat_prompt_embeds
+from toolkit.print import print_acc
 from toolkit.reference_adapter import ReferenceAdapter
 from toolkit.samplers.custom_flowmatch_sampler import FlowMatchStepWithLogProbScheduler
 
@@ -175,6 +178,8 @@ def _concat_tensor_tree(values: list[Any], device: torch.device, dtype: torch.dt
 
 class FlowGRPOTrainer(DiffusionTrainer):
     def __init__(self, process_id: int, job, config: OrderedDict, **kwargs):
+        model_config = config.setdefault("model", {})
+        self.reference_lora_path = model_config.get("reference_lora_path", None)
         train_config = config.setdefault("train", {})
         train_config["disable_sampling"] = True
         train_config["cache_text_embeddings"] = False
@@ -194,6 +199,7 @@ class FlowGRPOTrainer(DiffusionTrainer):
         self._flow_grpo_root = Path(self.save_root) / "flow_grpo"
         self._candidate_root = self._flow_grpo_root / "candidates"
         self._candidate_root.mkdir(parents=True, exist_ok=True)
+        self.reference_lora_network = None
         self._validate_flow_grpo_runtime_config()
         self._ensure_voting_schema()
 
@@ -1577,6 +1583,106 @@ class FlowGRPOTrainer(DiffusionTrainer):
         finally:
             self.network.is_active = was_active
 
+    def _load_reference_lora_baseline(self) -> None:
+        if self.reference_lora_path is None or self.reference_lora_network is not None:
+            return
+
+        reference_lora_path = os.path.expanduser(str(self.reference_lora_path))
+        raw_lora_state_dict = load_file(reference_lora_path)
+        lora_state_dict = raw_lora_state_dict
+        if hasattr(self.sd, "convert_lora_weights_before_load"):
+            lora_state_dict = self.sd.convert_lora_weights_before_load(raw_lora_state_dict)
+
+        uses_peft_format = bool(
+            self.model_config.is_flux or self.model_config.is_v3 or self.model_config.is_lumina2 or self.sd.is_transformer
+        )
+        modules_dim = {}
+        modules_alpha = {}
+        for key, value in lora_state_dict.items():
+            module_name = None
+            if ".lora_A." in key:
+                module_name = key.split(".lora_A.")[0]
+            elif ".lora_down." in key:
+                module_name = key.split(".lora_down.")[0]
+
+            if module_name is not None:
+                if uses_peft_format:
+                    module_name = module_name.replace(".", "$$")
+                modules_dim[module_name] = int(value.shape[0])
+            elif key.endswith(".alpha"):
+                module_name = key[:-len(".alpha")]
+                if uses_peft_format:
+                    module_name = module_name.replace(".", "$$")
+                modules_alpha[module_name] = value
+
+        for module_name, dim in modules_dim.items():
+            modules_alpha.setdefault(module_name, dim)
+
+        if not modules_dim:
+            raise ValueError("Flow-GRPO model.reference_lora_path must point to a standard LoRA safetensors file.")
+
+        linear_dim = next(iter(modules_dim.values()))
+        reference_network_config = NetworkConfig(
+            type="lora",
+            linear=linear_dim,
+            linear_alpha=linear_dim,
+            transformer_only=False,
+            network_kwargs={"only_if_contains": list(modules_dim.keys())},
+        )
+        network_kwargs = dict(reference_network_config.network_kwargs or {})
+        if getattr(self.sd, "target_lora_modules", None) is not None:
+            network_kwargs["target_lin_modules"] = self.sd.target_lora_modules
+
+        reference_network = LoRASpecialNetwork(
+            text_encoder=self.sd.text_encoder,
+            unet=self.sd.get_model_to_train(),
+            lora_dim=reference_network_config.linear,
+            multiplier=1.0,
+            alpha=reference_network_config.linear_alpha,
+            modules_dim=modules_dim,
+            modules_alpha=modules_alpha,
+            train_unet=True,
+            train_text_encoder=any(key.startswith("lora_te") or "text_encoder" in key for key in lora_state_dict.keys()),
+            is_sdxl=self.model_config.is_xl or self.model_config.is_ssd,
+            is_v2=self.model_config.is_v2,
+            is_v3=self.model_config.is_v3,
+            is_pixart=self.model_config.is_pixart,
+            is_auraflow=self.model_config.is_auraflow,
+            is_flux=self.model_config.is_flux,
+            is_lumina2=self.model_config.is_lumina2,
+            is_ssd=self.model_config.is_ssd,
+            is_vega=self.model_config.is_vega,
+            dropout=0.0,
+            use_text_encoder_1=self.model_config.use_text_encoder_1,
+            use_text_encoder_2=self.model_config.use_text_encoder_2,
+            network_config=reference_network_config,
+            network_type=reference_network_config.type,
+            transformer_only=reference_network_config.transformer_only,
+            is_transformer=self.sd.is_transformer,
+            base_model=self.sd,
+            is_assistant_adapter=True,
+            **network_kwargs,
+        )
+        reference_network.apply_to(
+            self.sd.text_encoder,
+            self.sd.get_model_to_train(),
+            reference_network.train_text_encoder,
+            reference_network.train_unet,
+        )
+        reference_network.force_to(self.device_torch, dtype=self.sd.torch_dtype)
+        reference_network._update_torch_multiplier()
+        reference_network.load_weights(raw_lora_state_dict)
+        reference_network.requires_grad_(False)
+        reference_network.eval()
+        reference_network.can_merge_in = False
+        reference_network.is_active = False
+        self.reference_lora_network = reference_network
+        print_acc(f"Loaded Flow-GRPO reference LoRA baseline from {reference_lora_path}")
+
+    def hook_after_model_load(self):
+        super().hook_after_model_load()
+        self._load_reference_lora_baseline()
+
     def _candidate_train_steps(self, candidate_state: CandidateState) -> int:
         total_steps = candidate_state.log_probs.shape[1]
         return max(
@@ -1668,51 +1774,58 @@ class FlowGRPOTrainer(DiffusionTrainer):
                 self.sd.torch_dtype,
             )
 
+        reference_lora = self.reference_lora_network if disable_lora else None
+        if reference_lora is not None:
+            reference_lora.is_active = True
         with contextlib.ExitStack() as stack:
-            if manage_assistant_lora:
-                stack.enter_context(self._sample_assistant_lora_state(offload_on_exit=disable_lora))
-            if manage_network_state:
-                stack.enter_context(
-                    self._rollout_network_state(
-                        network_multiplier=float(first_state.network_multiplier),
-                        active=not disable_lora,
-                        allow_merge=False,
+            try:
+                if manage_assistant_lora:
+                    stack.enter_context(self._sample_assistant_lora_state(offload_on_exit=disable_lora))
+                if manage_network_state:
+                    stack.enter_context(
+                        self._rollout_network_state(
+                            network_multiplier=float(first_state.network_multiplier),
+                            active=not disable_lora,
+                            allow_merge=False,
+                        )
                     )
+                rollout_batch = self._build_rollout_batch(
+                    control_tensor=control_tensor,
+                    latents=latents,
+                    cfg_batch_repeat=2
+                    if (
+                        unconditional_embeds is not None
+                        and float(first_state.guidance_scale) > 1.0
+                    )
+                    else 1,
                 )
-            rollout_batch = self._build_rollout_batch(
-                control_tensor=control_tensor,
-                latents=latents,
-                cfg_batch_repeat=2
-                if (
-                    unconditional_embeds is not None
-                    and float(first_state.guidance_scale) > 1.0
+                model_latents = self._condition_rollout_latents(latents, rollout_batch)
+                adapter_predict_kwargs = self._build_adapter_predict_kwargs(
+                    latents=latents,
+                    timesteps=timesteps,
+                    conditional_embeds=conditional_embeds,
+                    adapter_conditioning=adapter_conditioning,
+                    adapter_conditioning_scale=float(first_state.adapter_conditioning_scale),
                 )
-                else 1,
-            )
-            model_latents = self._condition_rollout_latents(latents, rollout_batch)
-            adapter_predict_kwargs = self._build_adapter_predict_kwargs(
-                latents=latents,
-                timesteps=timesteps,
-                conditional_embeds=conditional_embeds,
-                adapter_conditioning=adapter_conditioning,
-                adapter_conditioning_scale=float(first_state.adapter_conditioning_scale),
-            )
-            noise_pred = self._predict_rollout_noise(
-                latents=latents,
-                model_latents=model_latents,
-                timestep=timesteps,
-                conditional_embeds=conditional_embeds,
-                unconditional_embeds=unconditional_embeds,
-                guidance_scale=float(first_state.guidance_scale),
-                rollout_batch=rollout_batch,
-                adapter_predict_kwargs=adapter_predict_kwargs,
-                requires_grad=not disable_lora,
-            )
-            if not disable_lora and not noise_pred.requires_grad:
-                raise RuntimeError(
-                    "Flow-GRPO policy recomputation produced a detached prediction. "
-                    "This model's predict_noise/get_noise_prediction path must run the denoiser with gradients enabled."
+                noise_pred = self._predict_rollout_noise(
+                    latents=latents,
+                    model_latents=model_latents,
+                    timestep=timesteps,
+                    conditional_embeds=conditional_embeds,
+                    unconditional_embeds=unconditional_embeds,
+                    guidance_scale=float(first_state.guidance_scale),
+                    rollout_batch=rollout_batch,
+                    adapter_predict_kwargs=adapter_predict_kwargs,
+                    requires_grad=not disable_lora,
                 )
+                if not disable_lora and not noise_pred.requires_grad:
+                    raise RuntimeError(
+                        "Flow-GRPO policy recomputation produced a detached prediction. "
+                        "This model's predict_noise/get_noise_prediction path must run the denoiser with gradients enabled."
+                    )
+            finally:
+                if reference_lora is not None:
+                    reference_lora.is_active = False
             prev_sample = torch.cat(
                 [
                     train_unit.candidate_state.next_latents[:, train_unit.step_index].to(

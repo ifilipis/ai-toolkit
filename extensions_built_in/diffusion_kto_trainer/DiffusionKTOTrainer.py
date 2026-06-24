@@ -15,12 +15,15 @@ from typing import Optional
 import torch
 import torch.nn.functional as F
 from PIL import Image
+from safetensors.torch import load_file
 from torchvision.transforms import transforms
 
 from extensions_built_in.sd_trainer.DiffusionTrainer import DiffusionTrainer
-from toolkit.config_modules import GenerateImageConfig
+from toolkit.config_modules import GenerateImageConfig, NetworkConfig
 from toolkit.dataloader_mixins import clean_caption, get_comfyui_caption_from_png_metadata
+from toolkit.lora_special import LoRASpecialNetwork
 from toolkit.prompt_utils import PromptEmbeds, concat_prompt_embeds
+from toolkit.print import print_acc
 from toolkit.train_tools import get_torch_dtype
 
 
@@ -57,6 +60,8 @@ class DiffusionKTOTrainer(DiffusionTrainer):
     def __init__(self, process_id: int, job, config: OrderedDict, **kwargs):
         config.setdefault("kto", {})
         kto_config = DiffusionKTOConfig(**config.get("kto", {}))
+        model_config = config.setdefault("model", {})
+        self.reference_lora_path = model_config.get("reference_lora_path", None)
         self._kto_dataset_configs = list(config.get("datasets") or [])
         config.pop("datasets", None)
         train_config = config.setdefault("train", {})
@@ -79,6 +84,7 @@ class DiffusionKTOTrainer(DiffusionTrainer):
         self._offline_negative_examples: list[dict] = []
         self._offline_positive_index = 0
         self._offline_negative_index = 0
+        self.reference_lora_network = None
         if self.kto_config.dataset_enabled:
             self._offline_examples = self._load_offline_examples()
             self._offline_positive_examples = [
@@ -487,6 +493,106 @@ class DiffusionKTOTrainer(DiffusionTrainer):
         finally:
             self.network.is_active = was_active
 
+    def _load_reference_lora_baseline(self) -> None:
+        if self.reference_lora_path is None or self.reference_lora_network is not None:
+            return
+
+        reference_lora_path = os.path.expanduser(str(self.reference_lora_path))
+        raw_lora_state_dict = load_file(reference_lora_path)
+        lora_state_dict = raw_lora_state_dict
+        if hasattr(self.sd, "convert_lora_weights_before_load"):
+            lora_state_dict = self.sd.convert_lora_weights_before_load(raw_lora_state_dict)
+
+        uses_peft_format = bool(
+            self.model_config.is_flux or self.model_config.is_v3 or self.model_config.is_lumina2 or self.sd.is_transformer
+        )
+        modules_dim = {}
+        modules_alpha = {}
+        for key, value in lora_state_dict.items():
+            module_name = None
+            if ".lora_A." in key:
+                module_name = key.split(".lora_A.")[0]
+            elif ".lora_down." in key:
+                module_name = key.split(".lora_down.")[0]
+
+            if module_name is not None:
+                if uses_peft_format:
+                    module_name = module_name.replace(".", "$$")
+                modules_dim[module_name] = int(value.shape[0])
+            elif key.endswith(".alpha"):
+                module_name = key[:-len(".alpha")]
+                if uses_peft_format:
+                    module_name = module_name.replace(".", "$$")
+                modules_alpha[module_name] = value
+
+        for module_name, dim in modules_dim.items():
+            modules_alpha.setdefault(module_name, dim)
+
+        if not modules_dim:
+            raise ValueError("Diffusion-KTO model.reference_lora_path must point to a standard LoRA safetensors file.")
+
+        linear_dim = next(iter(modules_dim.values()))
+        reference_network_config = NetworkConfig(
+            type="lora",
+            linear=linear_dim,
+            linear_alpha=linear_dim,
+            transformer_only=False,
+            network_kwargs={"only_if_contains": list(modules_dim.keys())},
+        )
+        network_kwargs = dict(reference_network_config.network_kwargs or {})
+        if getattr(self.sd, "target_lora_modules", None) is not None:
+            network_kwargs["target_lin_modules"] = self.sd.target_lora_modules
+
+        reference_network = LoRASpecialNetwork(
+            text_encoder=self.sd.text_encoder,
+            unet=self.sd.get_model_to_train(),
+            lora_dim=reference_network_config.linear,
+            multiplier=1.0,
+            alpha=reference_network_config.linear_alpha,
+            modules_dim=modules_dim,
+            modules_alpha=modules_alpha,
+            train_unet=True,
+            train_text_encoder=any(key.startswith("lora_te") or "text_encoder" in key for key in lora_state_dict.keys()),
+            is_sdxl=self.model_config.is_xl or self.model_config.is_ssd,
+            is_v2=self.model_config.is_v2,
+            is_v3=self.model_config.is_v3,
+            is_pixart=self.model_config.is_pixart,
+            is_auraflow=self.model_config.is_auraflow,
+            is_flux=self.model_config.is_flux,
+            is_lumina2=self.model_config.is_lumina2,
+            is_ssd=self.model_config.is_ssd,
+            is_vega=self.model_config.is_vega,
+            dropout=0.0,
+            use_text_encoder_1=self.model_config.use_text_encoder_1,
+            use_text_encoder_2=self.model_config.use_text_encoder_2,
+            network_config=reference_network_config,
+            network_type=reference_network_config.type,
+            transformer_only=reference_network_config.transformer_only,
+            is_transformer=self.sd.is_transformer,
+            base_model=self.sd,
+            is_assistant_adapter=True,
+            **network_kwargs,
+        )
+        reference_network.apply_to(
+            self.sd.text_encoder,
+            self.sd.get_model_to_train(),
+            reference_network.train_text_encoder,
+            reference_network.train_unet,
+        )
+        reference_network.force_to(self.device_torch, dtype=self.sd.torch_dtype)
+        reference_network._update_torch_multiplier()
+        reference_network.load_weights(raw_lora_state_dict)
+        reference_network.requires_grad_(False)
+        reference_network.eval()
+        reference_network.can_merge_in = False
+        reference_network.is_active = False
+        self.reference_lora_network = reference_network
+        print_acc(f"Loaded Diffusion-KTO reference LoRA baseline from {reference_lora_path}")
+
+    def hook_after_model_load(self):
+        super().hook_after_model_load()
+        self._load_reference_lora_baseline()
+
     def _load_image_latents(self, image_path: str) -> torch.Tensor:
         dtype = get_torch_dtype(self.train_config.dtype)
         image = Image.open(image_path).convert("RGB")
@@ -594,18 +700,25 @@ class DiffusionKTOTrainer(DiffusionTrainer):
         )
         noisy_latents = self.sd.add_noise(latents, noise, timesteps)
         model_latents = self.sd.condition_noisy_latents(noisy_latents, fake_batch)
+        reference_lora = self.reference_lora_network if disable_network else None
+        if reference_lora is not None:
+            reference_lora.is_active = True
         with contextlib.ExitStack() as stack:
             if disable_network:
                 stack.enter_context(torch.no_grad())
                 stack.enter_context(self._network_disabled())
-            pred = self.predict_noise(
-                noisy_latents=model_latents.to(self.device_torch, dtype=dtype),
-                timesteps=timesteps,
-                conditional_embeds=conditional_embeds,
-                unconditional_embeds=unconditional_embeds,
-                batch=fake_batch,
-                is_primary_pred=not disable_network,
-            )
+            try:
+                pred = self.predict_noise(
+                    noisy_latents=model_latents.to(self.device_torch, dtype=dtype),
+                    timesteps=timesteps,
+                    conditional_embeds=conditional_embeds,
+                    unconditional_embeds=unconditional_embeds,
+                    batch=fake_batch,
+                    is_primary_pred=not disable_network,
+                )
+            finally:
+                if reference_lora is not None:
+                    reference_lora.is_active = False
         losses = F.mse_loss(pred.float(), target.float(), reduction="none")
         return losses.mean(dim=tuple(range(1, losses.ndim)))
 
