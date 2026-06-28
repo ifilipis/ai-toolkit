@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import contextlib
+import json
+import math
 import os
 import random
 import sqlite3
@@ -84,6 +86,11 @@ class DiffusionKTOTrainer(DiffusionTrainer):
         self._offline_negative_examples: list[dict] = []
         self._offline_positive_index = 0
         self._offline_negative_index = 0
+        self._pending_vote_examples: list[dict] = []
+        self._pending_vote_task_id: Optional[str] = None
+        self._pending_vote_total_steps = 0
+        self._pending_vote_completed_steps = 0
+        self._pending_vote_started_at = time.monotonic()
         self.reference_lora_network = None
         if self.kto_config.dataset_enabled:
             self._offline_examples = self._load_offline_examples()
@@ -898,7 +905,7 @@ class DiffusionKTOTrainer(DiffusionTrainer):
             "diff_neg": float(diff_neg.detach().cpu().item()),
         }
 
-    def _process_voted_task(self, task_id: str) -> Optional[dict[str, float]]:
+    def _enqueue_voted_task_examples(self, task_id: str) -> None:
         task_row, candidate_rows, vote_rows = self._load_task_rows(task_id)
         reward_by_candidate = {row["candidate_id"]: float(row["reward"]) for row in vote_rows}
         examples = [
@@ -914,10 +921,56 @@ class DiffusionKTOTrainer(DiffusionTrainer):
         ]
         if not examples:
             self._mark_task_processed(task_id)
-            return None
-        metrics = self._process_kto_examples(examples)
-        self._mark_task_processed(task_id)
-        return metrics
+            return
+        positive_examples = [example for example in examples if float(example.get("reward", 0.0)) > 0.0]
+        negative_examples = [example for example in examples if float(example.get("reward", 0.0)) < 0.0]
+        positive_ratio = float(self.kto_config.positive_ratio)
+        if positive_examples and negative_examples and 0.0 < positive_ratio < 1.0:
+            positive_count = len(positive_examples)
+            negative_count = len(negative_examples)
+            target_positive_count = max(
+                positive_count,
+                math.ceil(negative_count * positive_ratio / (1.0 - positive_ratio)),
+            )
+            target_negative_count = max(
+                negative_count,
+                math.ceil(positive_count * (1.0 - positive_ratio) / positive_ratio),
+            )
+            examples = [dict(positive_examples[index % positive_count]) for index in range(target_positive_count)]
+            examples += [dict(negative_examples[index % negative_count]) for index in range(target_negative_count)]
+            random.shuffle(examples)
+        elif positive_ratio <= 0.0:
+            examples = negative_examples
+        elif positive_ratio >= 1.0:
+            examples = positive_examples
+        self._pending_vote_examples.extend(examples)
+        batch_size = max(1, int(getattr(self.train_config, "batch_size", 1) or 1))
+        self._pending_vote_task_id = task_id
+        self._pending_vote_total_steps = math.ceil(len(self._pending_vote_examples) / batch_size)
+        self._pending_vote_completed_steps = 0
+        self._pending_vote_started_at = time.monotonic()
+        self._db_execute_write(
+            "UPDATE FlowGRPOVoteTask SET error = ? WHERE id = ? AND job_id = ?",
+            (self._kto_apply_progress_payload(0), task_id, self.job_id),
+        )
+
+    def _kto_apply_progress_payload(self, completed_steps: int) -> str:
+        total_steps = max(1, self._pending_vote_total_steps)
+        elapsed = max(1e-6, time.monotonic() - self._pending_vote_started_at)
+        remaining_steps = max(0, total_steps - completed_steps)
+        it_per_sec = completed_steps / elapsed
+        remaining_sec = (remaining_steps / it_per_sec) if it_per_sec > 0 else None
+        return json.dumps(
+            {
+                "type": "grpo_progress",
+                "phase": "apply_vote",
+                "completed_steps": completed_steps,
+                "total_steps": total_steps,
+                "it_per_sec": it_per_sec,
+                "elapsed_sec": elapsed,
+                "remaining_sec": remaining_sec,
+            }
+        )
 
     def hook_before_train_loop(self):
         super().hook_before_train_loop()
@@ -935,18 +988,38 @@ class DiffusionKTOTrainer(DiffusionTrainer):
         while True:
             self.maybe_stop()
             self._promote_requested_vote_tasks()
+            batch_size = max(1, int(getattr(self.train_config, "batch_size", 1) or 1))
+            pending_examples = self._pending_vote_examples[:batch_size]
+            if pending_examples:
+                self.update_status("running", "Applying Diffusion-KTO candidate vote")
+                metrics = self._process_kto_examples(pending_examples)
+                if metrics is not None:
+                    del self._pending_vote_examples[:len(pending_examples)]
+                    self._pending_vote_completed_steps += 1
+                    if self._pending_vote_task_id is not None:
+                        self._db_execute_write(
+                            "UPDATE FlowGRPOVoteTask SET error = ? WHERE id = ? AND job_id = ?",
+                            (
+                                self._kto_apply_progress_payload(self._pending_vote_completed_steps),
+                                self._pending_vote_task_id,
+                                self.job_id,
+                            ),
+                        )
+                    if not self._pending_vote_examples and self._pending_vote_task_id is not None:
+                        self._mark_task_processed(self._pending_vote_task_id)
+                        self._pending_vote_task_id = None
+                    self.update_status("running", "Waiting for Diffusion-KTO group votes")
+                    return metrics
+                continue
+
             task_id = self._next_voted_task()
             if task_id is None:
                 self.update_status("running", "Waiting for Diffusion-KTO group votes")
                 time.sleep(2.0)
                 continue
 
-            self.update_status("running", "Applying Diffusion-KTO group vote")
-            metrics = self._process_voted_task(task_id)
-            if metrics is None:
-                continue
-            self.update_status("running", "Waiting for Diffusion-KTO group votes")
-            return metrics
+            self.update_status("running", "Queueing Diffusion-KTO group votes")
+            self._enqueue_voted_task_examples(task_id)
 
     def get_training_info(self):
         info = super().get_training_info()
